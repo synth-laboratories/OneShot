@@ -94,3 +94,52 @@ Notes:
 Tips:
 - Modal runs require the `openai-api-keys` secret to be present in your Modal account. Rotate keys via `modal secret update` if needed.
 - The Modal flow does not rely on the local MITM proxy; use Docker if you need on-box traffic capture.
+
+## Modal: Parallel Evaluations
+
+Run multiple prepared tasks concurrently on Modal using the parallel runner.
+
+Prereqs:
+- Modal CLI set up (`pip install modal`, `modal setup`) and secret `openai-api-keys` created.
+- One-time Codex volume uploaded as in the Modal section above.
+- Tasks prepared under `data/tasks/prepared/<task_id>` (one dir per task).
+
+1) Create a config file (example: `data/modal_parallel.yaml`)
+
+```yaml
+agents:
+  model: gpt-4o-mini
+  timeout_sec: 1800
+  token_limit: 100000
+  max_parallel: 4   # how many Modal runs at once
+
+datasets:
+  prepared_tasks:
+    enabled: true
+    path: data/tasks/prepared
+    # tasks: ["task_a", "task_b"]  # optional; if omitted, auto-discovers subdirs
+
+output:
+  results_dir: data/runs/parallel
+  save_artifacts: true
+```
+
+2) Launch parallel runs
+
+From the repo root (recommended):
+
+```bash
+# Run from scripts/ so the internal Modal call can locate codex_modal_runner
+cd scripts
+python parallel_modal_runner.py \
+  --config ../data/modal_parallel.yaml \
+  --max-parallel 4 \
+  --format markdown \
+  --output ../data/runs/parallel_summary.md
+```
+
+Notes:
+- Omit `--max-parallel` to use the YAML value. Tune to avoid rate limits.
+- The runner auto-discovers tasks when `datasets.*.tasks` is not set.
+- Detailed JSON results are saved under `data/runs/parallel/` with timestamps; a markdown or CSV summary is optionally written via `--output`.
+- To fetch any missing artifacts later, use `python scripts/fetch_modal_artifacts.py list|fetch` as described above.

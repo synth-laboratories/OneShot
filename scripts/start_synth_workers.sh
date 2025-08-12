@@ -52,7 +52,7 @@ echo "[run] Proxy started. PID: $(cat /tmp/codex_mitm.pid 2>/dev/null || true)"
 # Start trace cleaner
 RAW_DB="data/traces/v3/raw_synth_ai.db/traces.sqlite3"
 CLEAN_DB="data/traces/v3/clean_synth_ai.db/traces.sqlite3"
-nohup env UV_NO_SYNC=1 PYTHONPATH="$REPO_ROOT" \
+nohup env UV_NO_SYNC=1 PYTHONPATH="$REPO_ROOT/src" \
   uv run -m local_tracing.trace_cleaner "$RAW_DB" "$CLEAN_DB" 5 15 \
   >/tmp/trace_cleaner.out 2>&1 &
 echo $! > /tmp/trace_cleaner.pid
