@@ -1,0 +1,793 @@
+#!/usr/bin/env python3
+"""
+MCP server for Codex-in-the-Box task creation.
+Provides start-task and end-task tools for capturing coding sessions.
+"""
+
+import json
+import sys
+import os
+import subprocess
+import asyncio
+import tempfile
+import argparse
+import logging
+import traceback
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+import sqlite3
+import shutil
+import re
+import hashlib
+
+# Try to import MCP SDK, fall back to JSON-RPC if not available
+try:
+    from mcp.server import Server
+    from mcp.server.stdio import stdio_server
+    from mcp.types import Tool, ToolResponse, TextContent
+    HAS_MCP_SDK = True
+except ImportError:
+    HAS_MCP_SDK = False
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/citb_mcp_server.out'),
+        logging.StreamHandler(sys.stderr)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class GitHelpers:
+    """Git operations helper"""
+    
+    @staticmethod
+    def run_git(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
+        """Run git command"""
+        full_cmd = ['git'] + cmd
+        logger.debug(f"Running git command: {' '.join(full_cmd)}")
+        result = subprocess.run(full_cmd, capture_output=True, text=True, check=False)
+        if check and result.returncode != 0:
+            logger.error(f"Git command failed: {result.stderr}")
+            raise RuntimeError(f"Git command failed: {result.stderr}")
+        return result
+    
+    @staticmethod
+    def get_current_branch() -> str:
+        """Get current git branch"""
+        result = GitHelpers.run_git(['branch', '--show-current'])
+        return result.stdout.strip()
+    
+    @staticmethod
+    def get_head_sha() -> str:
+        """Get current HEAD commit SHA"""
+        result = GitHelpers.run_git(['rev-parse', 'HEAD'])
+        return result.stdout.strip()
+    
+    @staticmethod
+    def get_remote_urls() -> List[str]:
+        """Get remote URLs"""
+        result = GitHelpers.run_git(['remote', '-v'], check=False)
+        urls = []
+        for line in result.stdout.strip().split('\n'):
+            if line:
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] not in urls:
+                    urls.append(parts[1])
+        return urls
+    
+    @staticmethod
+    def stage_all() -> bool:
+        """Stage all changes"""
+        result = GitHelpers.run_git(['add', '-A'], check=False)
+        return result.returncode == 0
+    
+    @staticmethod
+    def commit(message: str) -> Optional[str]:
+        """Create commit if there are changes"""
+        # Check if there are changes to commit
+        result = GitHelpers.run_git(['status', '--porcelain'], check=False)
+        if not result.stdout.strip():
+            logger.info("No changes to commit")
+            return None
+        
+        # Commit
+        result = GitHelpers.run_git(['commit', '-m', message], check=False)
+        if result.returncode == 0:
+            return GitHelpers.get_head_sha()
+        return None
+    
+    @staticmethod
+    def get_diff(start_commit: str, end_commit: str = 'HEAD') -> str:
+        """Get diff between commits"""
+        result = GitHelpers.run_git(['diff', '--binary', '-M', '-C', f'{start_commit}..{end_commit}', '--'])
+        return result.stdout
+    
+    @staticmethod
+    def get_staged_diff() -> str:
+        """Get staged diff"""
+        result = GitHelpers.run_git(['diff', '--cached'])
+        return result.stdout
+    
+    @staticmethod
+    def get_touched_files(start_commit: str, end_commit: str = 'HEAD') -> List[str]:
+        """Get list of touched files between commits"""
+        result = GitHelpers.run_git(['diff', '--name-status', f'{start_commit}..{end_commit}'])
+        files = []
+        for line in result.stdout.strip().split('\n'):
+            if line:
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    files.append(parts[1])
+        return files
+
+class TraceExporter:
+    """Export cleaned traces from the database"""
+    
+    @staticmethod
+    def export_session(run_id: str = None, start_time: datetime = None, end_time: datetime = None) -> Dict[str, Any]:
+        """Export cleaned session from database"""
+        db_path = Path('data/traces/v3/clean_synth_ai.db/traces.sqlite3')
+        
+        if not db_path.exists():
+            logger.warning(f"Clean trace database not found at {db_path}")
+            # Return empty traces instead of error
+            return {
+                "session_id": run_id or f"session_{datetime.now().isoformat()}",
+                "traces": [],
+                "count": 0,
+                "note": "Trace database not found"
+            }
+        
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            
+            # First check what columns exist
+            cursor.execute("PRAGMA table_info(traces)")
+            columns_info = cursor.fetchall()
+            column_names = [col[1] for col in columns_info]
+            
+            # Build query based on available filters and columns
+            query = "SELECT * FROM traces WHERE 1=1"
+            params = []
+            
+            # Only add run_id filter if column exists
+            if run_id and 'run_id' in column_names:
+                query += " AND run_id = ?"
+                params.append(run_id)
+            
+            if start_time and 'timestamp' in column_names:
+                query += " AND timestamp >= ?"
+                params.append(start_time.isoformat())
+            
+            if end_time and 'timestamp' in column_names:
+                query += " AND timestamp <= ?"
+                params.append(end_time.isoformat())
+            
+            query += " ORDER BY timestamp DESC LIMIT 1000" if 'timestamp' in column_names else " LIMIT 1000"
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            # Get column names
+            columns = [desc[0] for desc in cursor.description]
+            
+            # Convert to list of dicts
+            traces = []
+            for row in rows:
+                trace = dict(zip(columns, row))
+                traces.append(trace)
+            
+            conn.close()
+            
+            return {
+                "session_id": run_id or f"session_{datetime.now().isoformat()}",
+                "traces": traces,
+                "count": len(traces)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to export trace: {str(e)}")
+            # Return empty traces instead of error
+            return {
+                "session_id": run_id or f"session_{datetime.now().isoformat()}",
+                "traces": [],
+                "count": 0,
+                "error": str(e)
+            }
+
+class WorktreeReadiness:
+    """Check and fix worktree readiness"""
+    
+    @staticmethod
+    def check_readiness() -> Dict[str, Any]:
+        """Check worktree readiness"""
+        issues = []
+        
+        # Check git identity
+        result = subprocess.run(['git', 'config', 'user.name'], capture_output=True, text=True)
+        if not result.stdout.strip():
+            issues.append({
+                "id": "no_git_name",
+                "severity": "error",
+                "message": "Git user.name not configured",
+                "fix_suggestion": "Set git user.name",
+                "commands": ["git config user.name 'Your Name'"]
+            })
+        
+        result = subprocess.run(['git', 'config', 'user.email'], capture_output=True, text=True)
+        if not result.stdout.strip():
+            issues.append({
+                "id": "no_git_email",
+                "severity": "error",
+                "message": "Git user.email not configured",
+                "fix_suggestion": "Set git user.email",
+                "commands": ["git config user.email 'your@email.com'"]
+            })
+        
+        # Check for merge/rebase in progress
+        git_dir = Path('.git')
+        if (git_dir / 'MERGE_HEAD').exists():
+            issues.append({
+                "id": "merge_in_progress",
+                "severity": "error",
+                "message": "Merge in progress",
+                "fix_suggestion": "Complete or abort the merge",
+                "commands": ["git merge --abort"]
+            })
+        
+        if (git_dir / 'rebase-merge').exists() or (git_dir / 'rebase-apply').exists():
+            issues.append({
+                "id": "rebase_in_progress",
+                "severity": "error",
+                "message": "Rebase in progress",
+                "fix_suggestion": "Complete or abort the rebase",
+                "commands": ["git rebase --abort"]
+            })
+        
+        # Check for conflicts
+        result = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True)
+        if 'UU ' in result.stdout or 'AA ' in result.stdout:
+            issues.append({
+                "id": "merge_conflicts",
+                "severity": "error",
+                "message": "Unresolved merge conflicts",
+                "fix_suggestion": "Resolve conflicts or reset",
+                "commands": []
+            })
+        
+        # Check submodules
+        if Path('.gitmodules').exists():
+            result = subprocess.run(['git', 'submodule', 'status'], capture_output=True, text=True)
+            if result.stdout and '-' in result.stdout:
+                issues.append({
+                    "id": "uninitialized_submodules",
+                    "severity": "warning",
+                    "message": "Submodules not initialized",
+                    "fix_suggestion": "Initialize submodules",
+                    "commands": ["git submodule update --init --recursive"]
+                })
+        
+        ok = len([i for i in issues if i['severity'] == 'error']) == 0
+        
+        return {
+            "ok": ok,
+            "issues": issues,
+            "summary": f"Found {len(issues)} issues" if issues else "Worktree is ready"
+        }
+    
+    @staticmethod
+    def autofix_readiness() -> Dict[str, Any]:
+        """Apply safe automatic fixes"""
+        check_result = WorktreeReadiness.check_readiness()
+        fixed = []
+        
+        for issue in check_result['issues']:
+            if issue['id'] == 'no_git_name':
+                subprocess.run(['git', 'config', 'user.name', 'CITB User'], check=True)
+                fixed.append(issue['id'])
+            elif issue['id'] == 'no_git_email':
+                subprocess.run(['git', 'config', 'user.email', 'citb@localhost'], check=True)
+                fixed.append(issue['id'])
+            elif issue['id'] == 'uninitialized_submodules':
+                subprocess.run(['git', 'submodule', 'update', '--init', '--recursive'], check=True)
+                fixed.append(issue['id'])
+        
+        # Re-check after fixes
+        final_check = WorktreeReadiness.check_readiness()
+        
+        return {
+            "ok": final_check['ok'],
+            "fixed": fixed,
+            "remaining_issues": final_check['issues'],
+            "summary": f"Fixed {len(fixed)} issues, {len(final_check['issues'])} remaining"
+        }
+
+class CITBTaskManager:
+    """Manages CITB task creation"""
+    
+    def __init__(self):
+        self.state_file = Path('/tmp/citb_state.json')
+        self.base_dir = Path.cwd()
+        # Write new tasks into this repository under data/tasks/created
+        self.tasks_dir = self.base_dir / 'data' / 'tasks' / 'created'
+    
+    def generate_task_slug(self, title: str) -> str:
+        """Generate a task slug from title"""
+        # Clean the title
+        slug = re.sub(r'[^\w\s-]', '', title.lower())
+        slug = re.sub(r'[-\s]+', '-', slug)
+        slug = slug.strip('-')[:50]
+        
+        # Add timestamp for uniqueness
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        return f"{slug}_{timestamp}"
+    
+    def start_task(self, task_title: str, notes: str = "", labels: List[str] = None) -> Dict[str, Any]:
+        """Handle start-task operation"""
+        try:
+            # Check readiness first
+            readiness = WorktreeReadiness.check_readiness()
+            if not readiness['ok']:
+                return {
+                    "ok": False,
+                    "code": "NOT_READY",
+                    "message": "Worktree not ready",
+                    "details": readiness
+                }
+            
+            # Stage all changes
+            GitHelpers.stage_all()
+            
+            # Create commit
+            start_commit = GitHelpers.commit(f"CITB start: {task_title}")
+            if not start_commit:
+                start_commit = GitHelpers.get_head_sha()
+            
+            # Get repo context
+            branch = GitHelpers.get_current_branch()
+            remote_urls = GitHelpers.get_remote_urls()
+            
+            # Generate task slug
+            task_slug = self.generate_task_slug(task_title)
+            
+            # Save state
+            state = {
+                "task_slug": task_slug,
+                "task_title": task_title,
+                "notes": notes,
+                "labels": labels or [],
+                "start_commit": start_commit,
+                "branch": branch,
+                "remote_urls": remote_urls,
+                "started_at": datetime.now().isoformat(),
+                "cwd": str(self.base_dir),
+                "run_id": os.environ.get('RUN_ID', task_slug)
+            }
+            
+            with open(self.state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+            
+            logger.info(f"Started task: {task_slug}")
+            
+            return {
+                "ok": True,
+                "task_slug": task_slug,
+                "start_commit": start_commit,
+                "started_at": state['started_at']
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to start task: {str(e)}")
+            return {
+                "ok": False,
+                "code": "START_FAILED",
+                "message": str(e),
+                "details": {"traceback": traceback.format_exc()}
+            }
+    
+    def end_task(self, summary: str, labels: List[str] = None) -> Dict[str, Any]:
+        """Handle end-task operation"""
+        try:
+            # Load state
+            if not self.state_file.exists():
+                return {
+                    "ok": False,
+                    "code": "NO_STATE",
+                    "message": "No task in progress (state file not found)"
+                }
+            
+            with open(self.state_file, 'r') as f:
+                state = json.load(f)
+            
+            # Stage all changes
+            GitHelpers.stage_all()
+            
+            # Get touched files
+            touched_files = GitHelpers.get_touched_files(state['start_commit'])
+            
+            # Get diff
+            diff = GitHelpers.get_diff(state['start_commit'])
+            if not diff:
+                diff = GitHelpers.get_staged_diff()
+            
+            # Create end commit
+            end_commit = GitHelpers.commit(f"CITB end: {summary}")
+            if not end_commit:
+                end_commit = GitHelpers.get_head_sha()
+            
+            # Export trace
+            trace_data = TraceExporter.export_session(
+                run_id=state.get('run_id'),
+                start_time=datetime.fromisoformat(state['started_at']),
+                end_time=datetime.now()
+            )
+            
+            # Create task directory
+            task_dir = self.tasks_dir / state['task_slug']
+            task_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create trace directory
+            trace_dir = task_dir / 'trace'
+            trace_dir.mkdir(exist_ok=True)
+            
+            # Create evaluation directory
+            eval_dir = task_dir / 'evaluation'
+            eval_dir.mkdir(exist_ok=True)
+            tests_dir = eval_dir / 'tests_skeleton'
+            tests_dir.mkdir(exist_ok=True)
+            
+            # Write tb_meta.json
+            tb_meta = {
+                "task_id": state['task_slug'],
+                "metadata": {
+                    "title": state['task_title'],
+                    "tags": list(set((state.get('labels', []) or []) + (labels or [])))
+                },
+                "repo": {
+                    "git_url": state['remote_urls'][0] if state['remote_urls'] else "",
+                    "branch": state['branch'],
+                    "start_commit_sha": state['start_commit'],
+                    "end_commit_sha": end_commit,
+                    "subdir": "",
+                    "sparse_checkout": []
+                },
+                "lm": {
+                    "instructions": state.get('notes', '')
+                },
+                "evaluation": {
+                    "content_rubric": [],
+                    "location_rubric": [],
+                    "clarity_rubric": []
+                }
+            }
+            
+            with open(task_dir / 'tb_meta.json', 'w') as f:
+                json.dump(tb_meta, f, indent=2)
+            
+            # Write LM_INSTRUCTIONS.md
+            with open(task_dir / 'LM_INSTRUCTIONS.md', 'w') as f:
+                f.write(f"# Task: {state['task_title']}\n\n")
+                f.write(state.get('notes', ''))
+            
+            # Write repo_info.json
+            repo_info = {
+                "remote_urls": state['remote_urls'],
+                "branch": state['branch'],
+                "start_commit": state['start_commit'],
+                "end_commit": end_commit,
+                "touched_files": touched_files
+            }
+            
+            with open(task_dir / 'repo_info.json', 'w') as f:
+                json.dump(repo_info, f, indent=2)
+            
+            # Write diff.patch
+            with open(task_dir / 'diff.patch', 'w') as f:
+                f.write(diff)
+            
+            # Write trace files
+            with open(trace_dir / 'session_id.txt', 'w') as f:
+                f.write(trace_data.get('session_id', state.get('run_id', 'unknown')))
+            
+            with open(trace_dir / 'session_clean.json', 'w') as f:
+                json.dump(trace_data, f, indent=2)
+            
+            # Write evaluation templates
+            with open(eval_dir / 'rubric_template.md', 'w') as f:
+                f.write("# Evaluation Rubric\n\n")
+                f.write("## Content\n- [ ] TODO: Assess content correctness\n\n")
+                f.write("## Location\n- [ ] TODO: Assess file location appropriateness\n\n")
+                f.write("## Clarity\n- [ ] TODO: Assess code clarity and style\n\n")
+            
+            # Write test skeleton
+            with open(tests_dir / 'test_skeleton.py', 'w') as f:
+                f.write(f"import pytest\n\n")
+                f.write(f"def test_{state['task_slug'].replace('-', '_')}():\n")
+                f.write(f"    # TODO: Implement test for {state['task_title']}\n")
+                f.write(f"    pass\n")
+            
+            # Write notes.md
+            with open(task_dir / 'notes.md', 'w') as f:
+                f.write(f"# Task Notes: {state['task_title']}\n\n")
+                f.write(f"Created: {state['started_at']}\n")
+                f.write(f"Completed: {datetime.now().isoformat()}\n\n")
+                f.write(f"## Summary\n{summary}\n\n")
+                f.write(f"## Files Changed\n")
+                for file in touched_files:
+                    f.write(f"- {file}\n")
+                f.write(f"\n## TODO\n")
+                f.write(f"- [ ] Review diff.patch\n")
+                f.write(f"- [ ] Fill out evaluation rubric\n")
+                f.write(f"- [ ] Implement tests\n")
+                f.write(f"- [ ] Validate trace data\n")
+            
+            # Clean up state file
+            self.state_file.unlink()
+            
+            logger.info(f"Ended task: {state['task_slug']}")
+            
+            return {
+                "ok": True,
+                "task_dir": str(task_dir),
+                "diff_bytes": len(diff),
+                "touched_files": touched_files,
+                "clean_trace_path": str(trace_dir / 'session_clean.json')
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to end task: {str(e)}")
+            return {
+                "ok": False,
+                "code": "END_FAILED",
+                "message": str(e),
+                "details": {"traceback": traceback.format_exc()}
+            }
+
+# MCP SDK Implementation (if available)
+if HAS_MCP_SDK:
+    # Initialize the task manager
+    task_manager = CITBTaskManager()
+    
+    # Create the MCP server
+    mcp = Server("citb")
+    
+    @mcp.tool(name="repo_start_task", description="Start a new CITB task")
+    async def repo_start_task(task_title: str, notes: str = "", labels: List[str] = None) -> str:
+        """Start a new CITB task"""
+        result = task_manager.start_task(task_title, notes, labels)
+        return json.dumps(result)
+    
+    @mcp.tool(name="repo_end_task", description="End the current CITB task")
+    async def repo_end_task(summary: str, labels: List[str] = None) -> str:
+        """End the current CITB task"""
+        result = task_manager.end_task(summary, labels)
+        return json.dumps(result)
+    
+    @mcp.tool(name="repo_check_readiness", description="Check worktree readiness")
+    async def repo_check_readiness() -> str:
+        """Check worktree readiness"""
+        result = WorktreeReadiness.check_readiness()
+        return json.dumps(result)
+    
+    @mcp.tool(name="repo_autofix_readiness", description="Auto-fix worktree issues")
+    async def repo_autofix_readiness() -> str:
+        """Auto-fix worktree issues"""
+        result = WorktreeReadiness.autofix_readiness()
+        return json.dumps(result)
+    
+    def run_mcp_sdk():
+        """Run using MCP SDK"""
+        logger.info("Starting MCP server with SDK")
+        asyncio.run(stdio_server(mcp).run())
+
+# JSON-RPC Protocol Implementation (fallback)
+class MCPServer:
+    """MCP stdio server implementation using JSON-RPC"""
+    
+    def __init__(self):
+        self.task_manager = CITBTaskManager()
+        self.version = "1.0.0"
+    
+    def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle incoming MCP request"""
+        method = request.get('method', '')
+        params = request.get('params', {})
+        request_id = request.get('id')
+        
+        logger.debug(f"Handling request: {method}")
+        
+        try:
+            if method == 'initialize':
+                return self.handle_initialize(request_id)
+            elif method == 'notifications/initialized':
+                # Just acknowledge the notification
+                return None
+            elif method == 'tools/list':
+                return self.handle_list_tools(request_id)
+            elif method == 'tools/call':
+                return self.handle_tool_call(request_id, params)
+            else:
+                return self.error_response(request_id, -32601, f"Method not found: {method}")
+        except Exception as e:
+            logger.error(f"Error handling request: {str(e)}")
+            return self.error_response(request_id, -32603, str(e))
+    
+    def handle_initialize(self, request_id: Any) -> Dict[str, Any]:
+        """Handle initialize request"""
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "serverInfo": {
+                    "name": "citb-mcp-server",
+                    "version": self.version
+                }
+            }
+        }
+    
+    def handle_list_tools(self, request_id: Any) -> Dict[str, Any]:
+        """List available tools"""
+        tools = [
+            {
+                "name": "repo_start_task",
+                "description": "Start a new CITB task",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_title": {"type": "string", "description": "Title of the task"},
+                        "notes": {"type": "string", "description": "Additional notes"},
+                        "labels": {"type": "array", "items": {"type": "string"}, "description": "Task labels"}
+                    },
+                    "required": ["task_title"]
+                }
+            },
+            {
+                "name": "repo_end_task",
+                "description": "End the current CITB task",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string", "description": "Task summary"},
+                        "labels": {"type": "array", "items": {"type": "string"}, "description": "Additional labels"}
+                    },
+                    "required": ["summary"]
+                }
+            },
+            {
+                "name": "repo_check_readiness",
+                "description": "Check worktree readiness",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "repo_autofix_readiness",
+                "description": "Automatically fix worktree issues",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        ]
+        
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "tools": tools
+            }
+        }
+    
+    def handle_tool_call(self, request_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle tool call"""
+        tool_name = params.get('name', '')
+        arguments = params.get('arguments', {})
+        
+        logger.info(f"Tool call: {tool_name}")
+        logger.debug(f"Arguments: {json.dumps(arguments, indent=2)}")
+        
+        try:
+            if tool_name in ['repo_start_task', 'repo.start_task.v1']:
+                result = self.task_manager.start_task(
+                    arguments['task_title'],
+                    arguments.get('notes', ''),
+                    arguments.get('labels', [])
+                )
+            elif tool_name in ['repo_end_task', 'repo.end_task.v1']:
+                result = self.task_manager.end_task(
+                    arguments['summary'],
+                    arguments.get('labels', [])
+                )
+            elif tool_name in ['repo_check_readiness', 'repo.check_readiness.v1']:
+                result = WorktreeReadiness.check_readiness()
+            elif tool_name in ['repo_autofix_readiness', 'repo.autofix_readiness.v1']:
+                result = WorktreeReadiness.autofix_readiness()
+            else:
+                return self.error_response(request_id, -32602, f"Unknown tool: {tool_name}")
+            
+            # Return successful result
+            response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(result, indent=2)
+                        }
+                    ]
+                }
+            }
+            logger.debug(f"Returning success response: {json.dumps(response, indent=2)}")
+            return response
+        except Exception as e:
+            logger.error(f"Tool execution failed: {str(e)}")
+            return self.error_response(request_id, -32603, str(e))
+    
+    def error_response(self, request_id: Any, code: int, message: str) -> Dict[str, Any]:
+        """Create error response"""
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": code,
+                "message": message
+            }
+        }
+    
+    def run(self):
+        """Run the MCP server"""
+        logger.info("Starting MCP server (stdio mode)")
+        
+        while True:
+            try:
+                # Read from stdin
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                
+                # Parse JSON-RPC request
+                request = json.loads(line)
+                
+                # Handle request
+                response = self.handle_request(request)
+                
+                # Write response to stdout (only if not a notification)
+                if response is not None:
+                    sys.stdout.write(json.dumps(response) + '\n')
+                    sys.stdout.flush()
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON: {e}")
+            except KeyboardInterrupt:
+                logger.info("Server interrupted")
+                break
+            except Exception as e:
+                logger.error(f"Server error: {str(e)}")
+
+def main():
+    """Main entry point"""
+    if HAS_MCP_SDK:
+        # Try to use MCP SDK
+        try:
+            run_mcp_sdk()
+        except Exception as e:
+            logger.error(f"MCP SDK failed: {e}, falling back to JSON-RPC")
+            server = MCPServer()
+            server.run()
+    else:
+        # Use JSON-RPC implementation
+        server = MCPServer()
+        server.run()
+
+if __name__ == '__main__':
+    main()
