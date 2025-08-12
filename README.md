@@ -181,3 +181,47 @@ Notes:
 - The runner auto-discovers tasks when `datasets.*.tasks` is not set.
 - Detailed JSON results are saved under `data/runs/parallel/` with timestamps; a markdown or CSV summary is optionally written via `--output`.
 - To fetch any missing artifacts later, use `python scripts/fetch_modal_artifacts.py list|fetch` as described above.
+
+## Docker: Sequential Evaluations
+
+Run multiple prepared tasks one-by-one locally using Codex-in-the-Box. This is useful to avoid resource contention or API rate limits when you don’t need parallelism.
+
+Prereqs:
+- Tasks prepared under `data/tasks/prepared/<task_id>` (each contains a `tb_meta.json`).
+- Docker installed and running; follow the “Docker: Codex-in-the-Box” section above for one-time setup.
+
+1) Run all prepared tasks sequentially
+
+```bash
+# From repo root
+TIMEOUT=1800   # seconds
+TOKENS=100000  # token budget
+
+for task_dir in data/tasks/prepared/*; do
+  [ -d "$task_dir" ] || continue
+  if [ -f "$task_dir/tb_meta.json" ]; then
+    echo "=== Running $(basename "$task_dir") ==="
+    src/one_shot_bench/run_codex_box.sh "$task_dir" "$TIMEOUT" "$TOKENS"
+  else
+    echo "Skipping $task_dir (no tb_meta.json)"
+  fi
+done
+```
+
+2) Run a specific subset sequentially
+
+```bash
+# List task IDs (directory names under data/tasks/prepared)
+TASKS=( add-lm-tracing-readme another-task-id )
+for t in "${TASKS[@]}"; do
+  src/one_shot_bench/run_codex_box.sh "data/tasks/prepared/$t" 900 50000
+done
+```
+
+Outputs and scoring:
+- Each run writes artifacts and logs under `data/runs/<run_id>/` and generates `evaluation_results.json` and `scoring_results.md` after the container completes.
+- You can inspect a quick summary at `data/runs/<run_id>/summary.txt`.
+
+Tips:
+- Ensure an API key is available (see `run_codex_box.sh` usage). If a local MITM proxy is running, it’s auto-detected and injected.
+- Sequential runs can still hit provider rate limits; tune `TIMEOUT`/`TOKENS` or add `sleep` between iterations if needed.
