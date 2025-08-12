@@ -14,7 +14,7 @@
 - Run the evaluation in Docker:
   - `./development/codex_coach/one_shot_bench/run_codex_box.sh ./development/codex_coach/one_shot_bench/tasks/prepared/<task_name> 1800 100000`
 - View results and logs:
-  - Runs dir: `./development/codex_coach/one_shot_bench/runs/<run_id>`
+  - Runs dir: `./data/runs/<run_id>`
   - Artifacts, diffs, pytest output, and scoring summaries are saved per run.
 
 Note: `tasks/prepared/` is the canonical target (replaces the deprecated `tasks/generated/`).

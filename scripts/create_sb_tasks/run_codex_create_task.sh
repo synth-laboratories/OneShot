@@ -167,19 +167,13 @@ fi
 if [ "$START_PROXY" = "true" ]; then
     log_info "Starting proxy workers..."
     
-    # Check if run_synth_workers.sh exists
-    if [ -f "$REPO_ROOT/development/codex_coach/run_synth_workers.sh" ]; then
-        "$REPO_ROOT/development/codex_coach/run_synth_workers.sh" &
+    # Start local workers from this repo
+    if [ -f "$REPO_ROOT/scripts/start_synth_workers.sh" ]; then
+        "$REPO_ROOT/scripts/start_synth_workers.sh" &
         sleep 2
-        
-        # Verify proxy is running
-        if ! curl -s -o /dev/null -w "%{http_code}" http://localhost:$PROXY_PORT/health | grep -q "200\|401"; then
-            log_error "Proxy not responding on port $PROXY_PORT"
-            exit 1
-        fi
-        log_info "Proxy workers started successfully"
+        log_info "Proxy workers start requested"
     else
-        log_warn "run_synth_workers.sh not found, skipping proxy startup"
+        log_warn "scripts/start_synth_workers.sh not found, skipping proxy startup"
     fi
 fi
 
@@ -301,7 +295,7 @@ if [ -f /tmp/citb_state.json ]; then
     log_info "Task slug: $TASK_SLUG"
 else
     # Look for created task directory
-    CREATED_DIR="$REPO_ROOT/development/codex_coach/synth_bench/tasks/created"
+    CREATED_DIR="$REPO_ROOT/data/tasks/created"
     if [ -d "$CREATED_DIR" ]; then
         LATEST_TASK=$(ls -t "$CREATED_DIR" | head -1)
         if [ ! -z "$LATEST_TASK" ]; then
