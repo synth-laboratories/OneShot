@@ -312,7 +312,7 @@ class CITBTaskManager:
     def __init__(self):
         self.state_file = Path('/tmp/citb_state.json')
         self.base_dir = Path.cwd()
-        # Write new tasks into this repository under data/tasks/created
+        # Tasks saved under repo data dir
         self.tasks_dir = self.base_dir / 'data' / 'tasks' / 'created'
     
     def generate_task_slug(self, title: str) -> str:

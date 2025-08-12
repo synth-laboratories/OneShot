@@ -67,6 +67,7 @@ class Tracer:
                 {
                     "status_code": getattr(flow.response, "status_code", None),
                     "headers": dict(flow.response.headers) if flow.response else {},
+                    "session_id": os.environ.get("RUN_ID", "session_unknown"),
                 },
                 ensure_ascii=False,
             )

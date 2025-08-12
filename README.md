@@ -19,6 +19,23 @@ This launches:
 - a mitmproxy on `localhost:18080` writing logs to `/tmp/codex_mitm.out`
 - a trace cleaner runs locally and copies raw traces to a clean DB under `data/traces/v3/clean_synth_ai.db/traces.sqlite3`
 
+#### Tracing data model
+
+- Raw DB: `data/traces/v3/raw_synth_ai.db/traces.sqlite3`, table `traces` (one row per HTTP transaction; includes `meta_json.session_id` from `RUN_ID`).
+- Clean DB: `data/traces/v3/clean_synth_ai.db/traces.sqlite3`, table `cleaned_sessions` (one row per session; `formatted_json` aggregates events chronologically). Updated every 5 seconds by the cleaner.
+
+Inspect a few cleaned sessions:
+```bash
+sqlite3 data/traces/v3/clean_synth_ai.db/traces.sqlite3 \
+  'SELECT session_id, substr(formatted_json,1,160) FROM cleaned_sessions LIMIT 3;'
+```
+
+Give sessions an ID when running codex-synth:
+```bash
+export RUN_ID="host_$(date +%s)"
+codex-synth
+```
+
 2) Install and trust the MITM CA certificate (one-time)
 
 - The certificate is generated at `~/.mitmproxy/mitmproxy-ca-cert.pem`.
@@ -94,6 +111,27 @@ Notes:
 Tips:
 - Modal runs require the `openai-api-keys` secret to be present in your Modal account. Rotate keys via `modal secret update` if needed.
 - The Modal flow does not rely on the local MITM proxy; use Docker if you need on-box traffic capture.
+
+## MCP: repo_start_task / repo_end_task
+
+Enable Codex MCP tools that save tasks into this repo under `data/tasks/created`:
+
+```bash
+./scripts/create_sb_tasks/setup_codex_mcp.sh
+```
+
+This writes `~/.codex/config.toml` to point Codex at `scripts/create_sb_tasks/mcp_citb_server.py`.
+Verify inside Codex: ask “What tools do you have?” and ensure you see
+`repo.start_task.v1`, `repo.end_task.v1`, `repo.check_readiness.v1`, `repo.autofix_readiness.v1`.
+
+If tasks still save under `development/...`, remove stale aliases/functions and reinstall our wrapper and MCP config:
+
+```bash
+./scripts/install_codex_synth.sh
+./scripts/create_sb_tasks/setup_codex_mcp.sh
+exec $SHELL -l
+type -a codex-synth  # should show ~/.local/bin/codex-synth
+```
 
 ## Modal: Parallel Evaluations
 
