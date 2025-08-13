@@ -2,6 +2,16 @@
 
 Scalably converting pair-programming CLI trajectories into challenging digital agent tasks.
 
+Key idea:
+- You pair progress with Codex in the terminal until you're happy with the result.
+- Codex uses mcp tools to save the diff, initial validation criteria like a rubric and fail->pass unit tests, and a record of its successful trajectory to local storage.
+- You can then (upon optional tweaking of the rubric/unit tests) load that scenario into modal or docker and evaluate another instance of codex using a different model to see if it can headlessly "one-shot" the problem.
+- Such data can be shared to and fetched from huggingface. See  https://huggingface.co/datasets/JoshPurtell/one-shot-bench
+
+Motivations:
+- SWEBench is over a year old, and we're doing work with agents. This is a simple-ish (please contribute!) approach to create and curate an evaluation dataset that actually matters for you.
+- CLI agents are really powerful and have lots of applications. OSS scaffolding for facilitating the creation of high-quality data using skilled practitioners that already love using them means more data in the ecosystem.
+- Selfishly, I hate evaluating agents on SWEBench and other legacy SWE agent benchmarks. I'm hoping to curate a super high-quality long-horizon agent dataset to really put Synth's algos to the test!!
 
 ```
 +hello world
