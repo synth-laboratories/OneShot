@@ -1,4 +1,4 @@
-# one-shot-bench
+# OneShot Bench
 
 Scalably converting pair-programming CLI trajectories into challenging digital agent tasks.
 
@@ -21,7 +21,7 @@ bash scripts/create_tasks/setup_codex_mcp.sh
 ```
 Inside Codex, ask: "What tools do you have?" — you should see `repo.start_task.v1`, `repo.end_task.v1`, `repo.check_readiness.v1`, `repo.autofix_readiness.v1`.
 
-2.5) Optional: create a task locally 
+2.5) Optional: create a task locally - NOTE, there's a known bug where the MCP tools say failure after successful execution. Ignore it or push a fix :-)
 ```bash
 codex-synth
 <Hi codex, please update the readme with "hello world". Use the start task tool to begin and end task tool to finish>
@@ -30,6 +30,10 @@ codex-synth
 3) Hello world: run a prepared task locally (Docker)
 ```bash
 scripts/run_codex_box.sh data/tasks/prepared/add-lm-tracing-readme 900 50000
+```
+or run a newly created raw task (will automatically be prepared)
+```bash
+bash scripts/run_codex_box.sh data/tasks/created/update-readme-with-hello-world_20250812_181007 
 ```
 
 Artifacts and results will appear under `data/runs/<run_id>/`.
@@ -40,6 +44,5 @@ Artifacts and results will appear under `data/runs/<run_id>/`.
 - Creating a task (Codex MCP, one-shot): `guides/creating-a-task.md`
 - Running tasks sequentially with Docker: `guides/docker-sequential.md`
 - Running tasks in parallel with Modal: `guides/modal-parallel.md`
- - Using Hugging Face datasets: `guides/huggingface.md`
+- Using Hugging Face datasets: `guides/huggingface.md`
 
-hello world
