@@ -9,4 +9,6 @@ codex_volume = "codex-installation"
 # Name of the Modal secret that contains your OpenAI key
 openai_secret = "openai-api-keys"
 
-
+# Either API or Auth ("api", "auth")
+# Auth has some bugs atm
+eval_billing = "api"

@@ -46,3 +46,36 @@ Artifacts and results will appear under `data/runs/<run_id>/`.
 - Running tasks in parallel with Modal: `guides/modal-parallel.md`
 - Using Hugging Face datasets: `guides/huggingface.md`
 
+### Hugging Face integration
+
+- Upload a prepared task (slim, excludes heavy files):
+  - Guide: `guides/huggingface_upload.md`
+  - Command:
+    ```bash
+    uv run python scripts/upload_prepared_task_hf.py \
+      data/tasks/prepared/<slug> \
+      JoshPurtell/one-shot-bench \
+      tasks/<slug> \
+      --yes
+    ```
+
+- Run a prepared task fetched from Hugging Face (Docker):
+  - Guide: `guides/huggingface_run.md`
+  - Command:
+    ```bash
+    uv run python scripts/run_hf_task_docker.py \
+      --repo-id JoshPurtell/one-shot-bench \
+      --task-slug <slug> \
+      --model gpt-5-mini
+    ```
+
+### Modal (optional)
+
+- To run Codex in Modal instead of Docker:
+  ```bash
+  export OPENAI_API_KEY=sk-...
+  export OPENAI_MODEL=gpt-5-mini
+  uv tool install modal && modal setup
+  SANDBOX_BACKEND=modal bash scripts/run_codex_box.sh data/tasks/prepared/<slug>
+  ```
+
