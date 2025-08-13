@@ -2,6 +2,19 @@
 
 Scalably converting pair-programming CLI trajectories into challenging digital agent tasks.
 
+
+```
++hello world
+[results] ----------------------------------------
+[results] Rubric total score: 54%
+[results]  - task_completion: 0% (weight=0.4)
+[results]  - code_quality: 80% (weight=0.3)
+[results]  - testing: 100% (weight=0.3)
+[results] Unit tests: 1 passed, 1 failed
+[results] ========================================
+[cleanup] Removing container
+```
+
 ### Quick start
 
 1) Install codex-synth wrapper
