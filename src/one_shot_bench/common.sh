@@ -1,5 +1,4 @@
 #!/bin/bash
-# development/codex_coach/one_shot_bench/common.sh
 # Shared utilities for Codex-in-the-Box
 
 set -euo pipefail
@@ -109,9 +108,9 @@ check_prerequisites() {
         return 1
     fi
     
-    # Check Docker is running
+    # Check Docker is running (portable, no GNU timeout dependency)
     log "Checking Docker daemon..."
-    if ! timeout 5 docker ps >/dev/null 2>&1; then
+    if ! docker ps >/dev/null 2>&1; then
         log "ERROR: Docker daemon is not running or not responding"
         log "Please start Docker Desktop and try again"
         log "On macOS: open -a Docker"

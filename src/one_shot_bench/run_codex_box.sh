@@ -1,10 +1,6 @@
-#!/bin/bash
-# Main orchestrator for Codex-in-the-Box
-set -euo pipefail
-
-# Source common utilities
+#!/usr/bin/env bash
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/common.sh"
+exec "$SCRIPT_DIR/../../scripts/run_codex_box.sh" "$@"
 
 # Source .env file at repository root if it exists
 ENV_FILE="${SCRIPT_DIR}/../../../.env"
@@ -46,11 +42,40 @@ EOF
     exit 1
 fi
 
-# Validate task path
+# Normalize and optionally auto-prepare created tasks to prepared format
 TASK_PATH="$(cd "$TASK_PATH" && pwd)"
 if [ ! -f "$TASK_PATH/tb_meta.json" ]; then
     log "ERROR: No tb_meta.json found in $TASK_PATH"
     exit 1
+fi
+
+# If this looks like a created task (no Dockerfile), convert it to prepared automatically
+if [ ! -f "$TASK_PATH/Dockerfile" ]; then
+    log "Detected created task. Preparing for evaluation..."
+    # Derive prepared dir name from task_id with timestamp removed
+    TASK_ID_FROM_META=$(json_extract "$TASK_PATH/tb_meta.json" ".task_id")
+    BASE_NAME=$(python3 - << 'PY'
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+tid = json.load(open(p)) .get("task_id", "")
+print(tid.rsplit("_", 2)[0] if tid else "")
+PY
+"$TASK_PATH/tb_meta.json")
+    if [ -z "$BASE_NAME" ]; then
+        BASE_NAME="$(basename "$TASK_PATH")"
+    fi
+    PREPARED_DIR="${REPO_ROOT}/data/tasks/prepared/${BASE_NAME}"
+    if [ -d "$PREPARED_DIR" ] && [ -f "$PREPARED_DIR/tb_meta.json" ]; then
+        log "Prepared task already exists: $PREPARED_DIR"
+    else
+        log "Preparing task into: $PREPARED_DIR"
+        if ! uv run python "${SCRIPT_DIR}/prepare_task_for_eval.py" "$TASK_PATH"; then
+            log "ERROR: Failed to prepare created task at $TASK_PATH"
+            exit 1
+        fi
+    fi
+    TASK_PATH="$PREPARED_DIR"
 fi
 
 # Check prerequisites

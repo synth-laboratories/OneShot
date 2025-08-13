@@ -1,11 +1,11 @@
 #!/bin/bash
 # Setup MCP server for OpenAI Codex CLI
-# This configures ~/.codex/config.toml to use our CITB MCP server
+# This configures ~/.codex/config.toml to use our OneShot MCP server
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MCP_SERVER_PATH="$SCRIPT_DIR/mcp_citb_server.py"
+MCP_SERVER_PATH="$SCRIPT_DIR/mcp_oneshot_server.py"
 CONFIG_FILE="$HOME/.codex/config.toml"
 CONFIG_DIR="$(dirname "$CONFIG_FILE")"
 
@@ -25,22 +25,22 @@ if [ -f "$CONFIG_FILE" ]; then
     cp "$CONFIG_FILE" "${CONFIG_FILE}.backup"
 fi
 
-# Add or update CITB MCP server in config
+# Add or update OneShot MCP server in config
 echo -e "${GREEN}Configuring MCP server in ~/.codex/config.toml${NC}"
 
-# Check if mcp_servers.citb already exists
-if grep -q "\[mcp_servers.citb\]" "$CONFIG_FILE" 2>/dev/null; then
-    echo -e "${YELLOW}CITB MCP server already configured, updating...${NC}"
-    # Remove old citb config
-    sed -i.tmp '/\[mcp_servers.citb\]/,/^\[/{ /^\[/!d; }' "$CONFIG_FILE"
-    sed -i.tmp '/\[mcp_servers.citb\]/d' "$CONFIG_FILE"
+# Check if mcp_servers.oneshot already exists
+if grep -q "\[mcp_servers.oneshot\]" "$CONFIG_FILE" 2>/dev/null; then
+    echo -e "${YELLOW}OneShot MCP server already configured, updating...${NC}"
+    # Remove old oneshot config
+    sed -i.tmp '/\[mcp_servers.oneshot\]/,/^\[/{ /^\[/!d; }' "$CONFIG_FILE"
+    sed -i.tmp '/\[mcp_servers.oneshot\]/d' "$CONFIG_FILE"
     rm -f "${CONFIG_FILE}.tmp"
 fi
 
-# Append CITB MCP server config
+# Append OneShot MCP server config
 cat >> "$CONFIG_FILE" << EOF
 
-[mcp_servers.citb]
+[mcp_servers.oneshot]
 command = "python3"
 args = ["$MCP_SERVER_PATH"]
 env = { "PYTHONUNBUFFERED" = "1" }

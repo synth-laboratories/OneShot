@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MCP_SERVER_PATH="$SCRIPT_DIR/mcp_citb_server.py"
+MCP_SERVER_PATH="$SCRIPT_DIR/mcp_oneshot_server.py"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -15,11 +15,11 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}CITB MCP Server - Debug Mode${NC}"
+echo -e "${GREEN}OneShot MCP Server - Debug Mode${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Server path:${NC} $MCP_SERVER_PATH"
-echo -e "${BLUE}Log file:${NC} /tmp/citb_mcp_server.out"
+echo -e "${BLUE}Log file:${NC} /tmp/oneshot_mcp_server.out"
 echo -e "${BLUE}Working dir:${NC} $(pwd)"
 echo ""
 echo -e "${YELLOW}This server is configured in:${NC} ~/.codex/config.toml"
@@ -62,9 +62,9 @@ SERVER_PID=$!
 ) &
 
 # Also tail the log file if it exists
-if [ -f /tmp/citb_mcp_server.out ]; then
+if [ -f /tmp/oneshot_mcp_server.out ]; then
     echo -e "${YELLOW}Tailing log file...${NC}"
-    tail -f /tmp/citb_mcp_server.out | while IFS= read -r line; do
+    tail -f /tmp/oneshot_mcp_server.out | while IFS= read -r line; do
         echo -e "${YELLOW}[LOG]${NC} $line"
     done &
     TAIL_PID=$!

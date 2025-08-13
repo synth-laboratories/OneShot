@@ -1,15 +1,15 @@
-# Makefile for CITB task creation
+# Makefile for OneShot task creation
 # Usage: make create-task TITLE="Task title" NOTES="Task instructions"
 
 .PHONY: help create-task test-server test-mcp test-readiness test-end-to-end clean
 
 # Default target
 help:
-	@echo "CITB Task Creation Makefile"
+	@echo "OneShot Task Creation Makefile"
 	@echo ""
 	@echo "Main Targets:"
 	@echo "  create-task      - Create a task with automatic start/end (requires TASK)"
-	@echo "  interactive      - Start interactive codex-synth with CITB tools"
+	@echo "  interactive      - Start interactive codex-synth with OneShot tools"
 	@echo "  run-task         - Run task with title and description"
 	@echo ""
 	@echo "Testing Targets:"
@@ -29,7 +29,7 @@ help:
 	@echo "  2. Instruct the agent to use start_task and end_task"
 	@echo "  3. Capture all changes and generate task artifacts"
 
-# Create a new task using codex-synth with CITB
+# Create a new task using codex-synth with OneShot
 create-task:
 	@if [ -z "$(TASK)" ]; then \
 		echo "Error: TASK is required"; \
@@ -40,10 +40,10 @@ create-task:
 	@echo "Creating task: $(TASK)"
 	@./create_task.sh "$(TASK)"
 
-# Start interactive codex-synth session with CITB tools
+# Start interactive codex-synth session with OneShot tools
 interactive:
-	@echo "Starting interactive CITB session..."
-	@./citb.sh
+	@echo "Starting interactive OneShot session..."
+	@./oneshot.sh
 
 # Run codex-synth with specific task
 run-task:
@@ -51,7 +51,7 @@ run-task:
 		echo "Usage: make run-task TITLE=\"Title\" DESC=\"Description\""; \
 		exit 1; \
 	fi
-	@./run_codex_with_citb.sh -t "$(TITLE)" -d "$(DESC)"
+	@./run_codex_with_oneshot.sh -t "$(TITLE)" -d "$(DESC)"
 
 # Test the HTTP tool server
 test-server:
@@ -70,14 +70,14 @@ test-server:
 # Test the MCP server
 test-mcp:
 	@echo "Testing MCP server..."
-	@echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | python3 mcp_citb_server.py 2>/dev/null | jq .
-	@echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | python3 mcp_citb_server.py 2>/dev/null | jq .
+	@echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | python3 mcp_oneshot_server.py 2>/dev/null | jq .
+	@echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | python3 mcp_oneshot_server.py 2>/dev/null | jq .
 	@echo "MCP test completed"
 
 # Test worktree readiness
 test-readiness:
 	@echo "Testing worktree readiness..."
-	@python3 -c "from mcp_citb_server import WorktreeReadiness; import json; print(json.dumps(WorktreeReadiness.check_readiness(), indent=2))"
+	@python3 -c "from mcp_oneshot_server import WorktreeReadiness; import json; print(json.dumps(WorktreeReadiness.check_readiness(), indent=2))"
 
 # Run end-to-end test
 test-end-to-end:
@@ -102,10 +102,10 @@ test-end-to-end:
 # Clean up temporary files
 clean:
 	@echo "Cleaning up temporary files..."
-	@rm -f /tmp/citb_state.json
-	@rm -f /tmp/citb_prompt_*.txt
-	@rm -f /tmp/citb_mcp_server.out
-	@rm -f /tmp/citb_tool_server.out
+	@rm -f /tmp/oneshot_state.json
+	@rm -f /tmp/oneshot_prompt_*.txt
+	@rm -f /tmp/oneshot_mcp_server.out
+	@rm -f /tmp/oneshot_tool_server.out
 	@echo "Cleanup completed"
 
 # Install dependencies

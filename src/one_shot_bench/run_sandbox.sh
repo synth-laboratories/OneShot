@@ -60,7 +60,7 @@ case "$SANDBOX_BACKEND" in
         
         # Prepare task for Modal (copy codex-files)
         echo "Preparing task for Modal execution..."
-        PREPARE_SCRIPT="$(dirname "$0")/../prepare_task_for_modal.sh"
+        PREPARE_SCRIPT="$(dirname "$0")/../prepare_task_for_modal_v2.sh"
         if [ -f "$PREPARE_SCRIPT" ]; then
             "$PREPARE_SCRIPT" "$TASK_DIR_ABS"
             if [ $? -ne 0 ]; then
@@ -68,7 +68,7 @@ case "$SANDBOX_BACKEND" in
                 exit 1
             fi
         else
-            echo "Warning: prepare_task_for_modal.sh not found"
+            echo "Warning: prepare_task_for_modal_v2.sh not found"
             echo "Continuing anyway, but task may fail without codex-files"
         fi
         

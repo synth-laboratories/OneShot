@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for CITB task creation components.
+Test script for OneShot task creation components.
 Tests individual components and end-to-end workflow.
 """
 
@@ -19,11 +19,11 @@ from unittest.mock import patch, MagicMock
 # Add current directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from mcp_citb_server import (
+from mcp_oneshot_server import (
     GitHelpers, 
     TraceExporter, 
     WorktreeReadiness, 
-    CITBTaskManager,
+    OneShotTaskManager,
     MCPServer
 )
 
@@ -72,12 +72,12 @@ class TestWorktreeReadiness(unittest.TestCase):
         self.assertIn('remaining_issues', result)
         self.assertIsInstance(result['fixed'], list)
 
-class TestCITBTaskManager(unittest.TestCase):
-    """Test CITBTaskManager class"""
+class TestOneShotTaskManager(unittest.TestCase):
+    """Test OneShotTaskManager class"""
     
     def setUp(self):
         """Set up test environment"""
-        self.manager = CITBTaskManager()
+        self.manager = OneShotTaskManager()
         self.test_dir = Path(tempfile.mkdtemp())
         
     def tearDown(self):
@@ -121,7 +121,7 @@ class TestCITBTaskManager(unittest.TestCase):
             # Clean up
             self.manager.state_file.unlink()
     
-    @patch('mcp_citb_server.TraceExporter.export_session')
+    @patch('mcp_oneshot_server.TraceExporter.export_session')
     def test_end_task(self, mock_export):
         """Test ending a task"""
         # Mock trace export
@@ -269,7 +269,7 @@ class TestEndToEnd(unittest.TestCase):
     
     def test_complete_workflow(self):
         """Test complete task creation workflow"""
-        manager = CITBTaskManager()
+        manager = OneShotTaskManager()
         
         try:
             # 1. Check readiness
@@ -279,7 +279,7 @@ class TestEndToEnd(unittest.TestCase):
             # 2. Start task
             start_result = manager.start_task(
                 task_title="E2E Test Task",
-                notes="End-to-end test of CITB workflow",
+                notes="End-to-end test of OneShot workflow",
                 labels=["test", "e2e"]
             )
             
@@ -293,7 +293,7 @@ class TestEndToEnd(unittest.TestCase):
             test_file.write_text("Test content for E2E")
             
             # 4. End task
-            with patch('mcp_citb_server.TraceExporter.export_session') as mock_export:
+            with patch('mcp_oneshot_server.TraceExporter.export_session') as mock_export:
                 mock_export.return_value = {
                     "session_id": "e2e_test_session",
                     "traces": [{"test": "trace"}],
@@ -361,7 +361,7 @@ def run_tests(verbose=False):
     # Add test classes
     suite.addTests(loader.loadTestsFromTestCase(TestGitHelpers))
     suite.addTests(loader.loadTestsFromTestCase(TestWorktreeReadiness))
-    suite.addTests(loader.loadTestsFromTestCase(TestCITBTaskManager))
+    suite.addTests(loader.loadTestsFromTestCase(TestOneShotTaskManager))
     suite.addTests(loader.loadTestsFromTestCase(TestMCPServer))
     
     # Skip HTTP tests if server can't start
@@ -388,7 +388,7 @@ def run_tests(verbose=False):
 if __name__ == '__main__':
     import argparse
     
-    parser = argparse.ArgumentParser(description='Test CITB components')
+    parser = argparse.ArgumentParser(description='Test OneShot components')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     parser.add_argument('--quick', action='store_true', help='Run quick tests only')
     args = parser.parse_args()
@@ -399,7 +399,7 @@ if __name__ == '__main__':
         suite = unittest.TestSuite()
         suite.addTest(TestGitHelpers('test_get_current_branch'))
         suite.addTest(TestWorktreeReadiness('test_check_readiness'))
-        suite.addTest(TestCITBTaskManager('test_generate_task_slug'))
+        suite.addTest(TestOneShotTaskManager('test_generate_task_slug'))
         
         runner = unittest.TextTestRunner(verbosity=2 if args.verbose else 1)
         result = runner.run(suite)

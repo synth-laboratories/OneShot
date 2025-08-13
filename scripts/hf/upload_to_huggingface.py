@@ -1,66 +1,20 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
 
-from huggingface_hub import HfApi, create_repo, upload_file
+# Ensure src on path
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_DIR = _REPO_ROOT / 'src'
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from one_shot_bench.hf.upload import upload_dataset as upload_dataset_mod
 
 
-DEFAULT_DATA = Path("development/codex_coach/datasets/codex_coach_tasks/train.jsonl")
-
-
-def upload_dataset(repo_id: str, data_file: Path, commit_message: str = "Add dataset") -> int:
-    if not data_file.exists():
-        print(f"Dataset file not found: {data_file}", file=sys.stderr)
-        return 1
-
-    token = os.getenv("HUGGINGFACE_HUB_TOKEN")
-    api = HfApi(token=token)
-
-    # Ensure repo exists
-    try:
-        create_repo(repo_id, repo_type="dataset", exist_ok=True, token=token)
-    except Exception as e:
-        print(f"Failed to create or access repo {repo_id}: {e}", file=sys.stderr)
-        return 1
-
-    # Upload JSONL file under standard path
-    try:
-        upload_file(
-            path_or_fileobj=str(data_file),
-            path_in_repo="data/train.jsonl",
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=commit_message,
-            token=token,
-        )
-    except Exception as e:
-        print(f"Upload failed: {e}", file=sys.stderr)
-        return 1
-
-    # Create a minimal dataset card if missing
-    try:
-        card_content = (
-            "# Codex Coach Tasks\n\n"
-            "Prepared coding-agent tasks with repo anchors, instructions, and evaluation rubrics/tests.\n\n"
-            "See data/train.jsonl for the dataset.\n"
-        )
-        upload_file(
-            path_or_fileobj=card_content.encode("utf-8"),
-            path_in_repo="README.md",
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message="Update dataset card",
-            token=token,
-        )
-    except Exception as _:
-        pass
-
-    print(f"Uploaded to https://huggingface.co/datasets/{repo_id}")
-    return 0
+DEFAULT_DATA = Path("data/datasets/codex_coach_tasks/train.jsonl")
 
 
 def main() -> int:
@@ -70,7 +24,18 @@ def main() -> int:
     parser.add_argument("--message", default="Add dataset")
     args = parser.parse_args()
 
-    return upload_dataset(args.repo_id, args.data, args.message)
+    if not args.data.exists():
+        print(f"Dataset file not found: {args.data}", file=sys.stderr)
+        return 1
+
+    token = os.getenv("HUGGINGFACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
+    try:
+        upload_dataset_mod(args.data.parent, args.repo_id, token, private=False, create_pr=False)
+    except Exception as e:
+        print(f"Upload failed: {e}", file=sys.stderr)
+        return 1
+    print(f"Uploaded to https://huggingface.co/datasets/{args.repo_id}")
+    return 0
 
 
 if __name__ == "__main__":
@@ -78,7 +43,7 @@ if __name__ == "__main__":
 
 #!/usr/bin/env python3
 """
-Upload exported dataset to HuggingFace Hub.
+Deprecated inline implementation kept for reference; logic moved to one_shot_bench.hf.upload.
 """
 
 import json

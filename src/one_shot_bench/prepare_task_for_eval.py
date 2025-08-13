@@ -19,22 +19,9 @@ def fix_git_url(url: str, repo_info: Dict[str, Any]) -> tuple[str, Dict[str, Any
         url = url.replace("git@github.com:", "https://github.com/")
     
     # Map of problematic repos to working alternatives
-    repo_replacements = {
-        "https://github.com/synth-laboratories/research.git": {
-            "url": "https://github.com/synth-laboratories/synth-ai.git",
-            "branch": "main",
-            "commit": "75339c2",
-            "reason": "Private repository - using public synth-ai instead"
-        }
-    }
-    
-    if url in repo_replacements:
-        replacement = repo_replacements[url]
-        print(f"  ⚠️  Replacing problematic repo: {replacement['reason']}")
-        url = replacement["url"]
-        repo_info["branch"] = replacement["branch"]
-        repo_info["start_commit_sha"] = replacement["commit"]
-        repo_info["end_commit_sha"] = replacement["commit"]
+    # No fallback mappings; enforce public HTTPS URL
+    if not url.startswith("https://github.com/"):
+        raise ValueError(f"Unsupported git_url: {url}. Please use a public HTTPS GitHub URL.")
     
     return url, repo_info
 
@@ -131,7 +118,7 @@ def create_dockerfile(task_meta: Dict[str, Any]) -> str:
     return f'''FROM ubuntu:24.04
 
 # Build arguments from tb_meta.json
-ARG GIT_URL="{repo.get('git_url', 'https://github.com/synth-laboratories/synth-ai.git')}"
+ARG GIT_URL="{repo.get('git_url', '')}"
 ARG GIT_BRANCH="{repo.get('branch', 'main')}"
 ARG GIT_COMMIT="{repo.get('start_commit_sha', 'HEAD')}"
 ARG TASK_ID="{task_meta.get('task_id', 'unknown')}"

@@ -984,6 +984,20 @@ def setup_codex():
     
     # Upload to Modal volume
     print("Uploading to Modal volume...")
+    # Ensure secret exists using local .env if present (simple parser, no extra deps)
+    dotenv_path = Path.cwd() / ".env"
+    if dotenv_path.exists():
+        try:
+            key = None
+            for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("OPENAI_API_KEY="):
+                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+            if key:
+                os.system(f"modal secret create openai-api-keys OPENAI_API_KEY={key} >/dev/null 2>&1 || true")
+        except Exception:
+            # Non-fatal; user can create the secret manually
+            pass
     result = setup_codex_volume.remote(tar_data)
     
     print(f"Result: {result}")

@@ -1,4 +1,4 @@
-# CITB (Codex-in-the-Box) Task Creation System
+# OneShot Task Creation System
 
 A system for capturing coding sessions with codex-synth through MITM proxy and materializing task scaffolds for review. This runs codex-synth interactively with MCP tools for task tracking.
 
@@ -10,12 +10,12 @@ This system provides codex-synth with MCP tools (start_task/end_task) to automat
 
 ### Core Files
 
-- **`mcp_citb_server.py`** - MCP server providing start-task and end-task tools for codex-synth
-- **`citb.sh`** - Simple wrapper to run codex-synth with CITB MCP tools
+- **`mcp_oneshot_server.py`** - MCP server providing start-task and end-task tools for codex-synth
+- **`oneshot.sh`** - Simple wrapper to run codex-synth with OneShot MCP tools
 - **`create_task.sh`** - One-shot task creation with automatic start/end instructions
-- **`run_codex_with_citb.sh`** - Run codex-synth with task title and description
+- **`run_codex_with_oneshot.sh`** - Run codex-synth with task title and description
 - **`tool_server.py`** - HTTP fallback server (if MCP not available)
-- **`test_citb.py`** - Comprehensive test suite
+- **`test_oneshot.py`** - Comprehensive test suite
 - **`Makefile`** - Convenient interface for all operations
 
 ### Features
@@ -32,8 +32,7 @@ This system provides codex-synth with MCP tools (start_task/end_task) to automat
 
 1. Ensure proxy workers are running (optional but recommended):
 ```bash
-cd ../..  # Go to development/codex_coach/
-./run_synth_workers.sh
+./scripts/start_synth_workers.sh
 ```
 
 2. Install codex-synth (if not already installed):
@@ -52,13 +51,13 @@ make create-task TASK="Add a section about testing to README.md"
 ./create_task.sh "Fix the login bug in auth.js"
 ```
 
-#### Method 2: Interactive session with CITB tools
+#### Method 2: Interactive session with OneShot tools
 ```bash
 # Start interactive codex-synth with MCP tools available
 make interactive
 
 # Or:
-./citb.sh
+./oneshot.sh
 ```
 
 Then tell the agent to use `repo.start_task.v1` and `repo.end_task.v1` tools.
@@ -68,14 +67,14 @@ Then tell the agent to use `repo.start_task.v1` and `repo.end_task.v1` tools.
 make run-task TITLE="Refactor auth" DESC="Refactor authentication module for better security"
 
 # Or:
-./run_codex_with_citb.sh -t "Refactor auth" -d "Detailed instructions here"
+./run_codex_with_oneshot.sh -t "Refactor auth" -d "Detailed instructions here"
 ```
 
 ### Test the System
 
 Run quick tests:
 ```bash
-python3 test_citb.py --quick
+python3 test_oneshot.py --quick
 ```
 
 Test HTTP server:
@@ -90,7 +89,7 @@ make test-readiness
 
 ## Output Structure
 
-Tasks are created under `../synth_bench/tasks/created/<task_slug>/`:
+Tasks are created under `data/tasks/created/<task_slug>/`:
 
 ```
 <task_slug>/
@@ -116,7 +115,7 @@ Tasks are created under `../synth_bench/tasks/created/<task_slug>/`:
    - Work on the requested task
    - Call `repo.end_task.v1` when done (creates diff, exports traces, generates artifacts)
 
-3. **Output**: Tasks are saved to `../synth_bench/tasks/created/<task_slug>/` with all artifacts
+3. **Output**: Tasks are saved to `data/tasks/created/<task_slug>/` with all artifacts
 
 ## HTTP API Endpoints
 
@@ -156,7 +155,7 @@ make create-task TITLE="Task" MCP=1
 
 Run all tests:
 ```bash
-python3 test_citb.py -v
+python3 test_oneshot.py -v
 ```
 
 Clean temporary files:

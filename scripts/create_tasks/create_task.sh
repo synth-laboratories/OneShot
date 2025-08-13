@@ -1,13 +1,13 @@
 #!/bin/bash
-# Create a task by running codex-synth with CITB tools and instructions
+# Create a task by running codex-synth with OneShot tools and instructions
 # Usage: ./create_task.sh "Your task description here"
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-MCP_SERVER_PATH="$SCRIPT_DIR/mcp_citb_server.py"
-RUN_ID="citb_$(date +%Y%m%d_%H%M%S)_$$"
+MCP_SERVER_PATH="$SCRIPT_DIR/mcp_oneshot_server.py"
+RUN_ID="oneshot_$(date +%Y%m%d_%H%M%S)_$$"
 PROXY_PORT=18080
 
 # Get user's task from arguments
@@ -27,7 +27,7 @@ mkdir -p "$(dirname "$MCP_CONFIG_FILE")"
 cat > "$MCP_CONFIG_FILE" << EOF
 {
   "mcpServers": {
-    "citb": {
+    "oneshot": {
       "command": "python3",
       "args": ["$MCP_SERVER_PATH"],
       "env": {
@@ -49,7 +49,7 @@ fi
 # Generate task title from description (first few words)
 TASK_TITLE="$(echo "$USER_TASK" | cut -d' ' -f1-5)"
 
-# Create the full prompt with CITB instructions
+# Create the full prompt with OneShot instructions
 FULL_PROMPT="You have MCP tools available for task tracking. 
 
 CRITICAL: You MUST immediately call the tool 'repo.start_task.v1' with:
@@ -74,7 +74,7 @@ cd "$REPO_ROOT"
 export RUN_ID="$RUN_ID"
 
 echo "=================================="
-echo "CITB Task Creation"
+echo "OneShot Task Creation"
 echo "Run ID: $RUN_ID"
 echo "Task: $USER_TASK"
 echo "=================================="

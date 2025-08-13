@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run codex-synth with CITB MCP tools available
+# Run codex-synth with OneShot MCP tools available
 # This starts an interactive session where the agent has access to start-task and end-task tools
 
 set -e
@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PROXY_PORT=18080
-RUN_ID="citb_$(date +%Y%m%d_%H%M%S)_$$"
+RUN_ID="oneshot_$(date +%Y%m%d_%H%M%S)_$$"
 
 # Colors
 GREEN='\033[0;32m'
@@ -52,7 +52,7 @@ while [[ $# -gt 0 ]]; do
             echo "This script:"
             echo "1. Ensures MCP server is configured"
             echo "2. Sets up proxy (if available)"
-            echo "3. Runs codex-synth with CITB instructions"
+            echo "3. Runs codex-synth with OneShot instructions"
             exit 0
             ;;
         *)
@@ -79,7 +79,7 @@ if [ "$USE_PROXY" = "true" ]; then
 fi
 
 # Ensure MCP server is configured
-MCP_SERVER_PATH="$SCRIPT_DIR/mcp_citb_server.py"
+MCP_SERVER_PATH="$SCRIPT_DIR/mcp_oneshot_server.py"
 MCP_CONFIG_FILE="$HOME/.codex-synth/mcp_settings.json"
 MCP_CONFIG_DIR="$(dirname "$MCP_CONFIG_FILE")"
 
@@ -90,7 +90,7 @@ log_info "Setting up MCP configuration..."
 cat > "$MCP_CONFIG_FILE" << EOF
 {
   "mcpServers": {
-    "citb": {
+    "oneshot": {
       "command": "python3",
       "args": ["$MCP_SERVER_PATH"],
       "env": {
@@ -105,7 +105,7 @@ EOF
 log_info "MCP server configured at: $MCP_CONFIG_FILE"
 
 # Create instructions template
-INSTRUCTIONS_FILE="/tmp/citb_instructions_${RUN_ID}.md"
+INSTRUCTIONS_FILE="/tmp/oneshot_instructions_${RUN_ID}.md"
 
 if [ -n "$TASK_TITLE" ]; then
     cat > "$INSTRUCTIONS_FILE" << EOF
@@ -154,7 +154,7 @@ Remember: ALWAYS call start_task first and end_task when done!
 EOF
 else
     cat > "$INSTRUCTIONS_FILE" << EOF
-## CITB Task Management Tools Available
+## OneShot Task Management Tools Available
 
 You have access to MCP tools for task tracking. When working on any task:
 
@@ -191,7 +191,7 @@ echo "=========================================="
 echo ""
 
 # Run codex-synth
-log_info "Starting codex-synth with CITB tools..."
+log_info "Starting codex-synth with OneShot tools..."
 log_info "Run ID: $RUN_ID"
 echo ""
 

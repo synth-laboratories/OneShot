@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HTTP fallback server for CITB task creation.
+HTTP fallback server for OneShot task creation.
 Provides the same functionality as the MCP server but via HTTP endpoints.
 """
 
@@ -12,32 +12,35 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 import argparse
 
-# Add parent directory to path to import from mcp_citb_server
-sys.path.insert(0, str(Path(__file__).parent))
+# Ensure src is on sys.path to import package modules
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_DIR = _REPO_ROOT / 'src'
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
-from mcp_citb_server import CITBTaskManager, WorktreeReadiness
+from one_shot_bench.task_creation import OneShotTaskManager, WorktreeReadiness
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/tmp/citb_tool_server.out'),
+        logging.FileHandler('/tmp/oneshot_tool_server.out'),
         logging.StreamHandler(sys.stderr)
     ]
 )
 logger = logging.getLogger(__name__)
 
-class CITBHTTPHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for CITB operations"""
+class OneShotHTTPHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for OneShot operations"""
     
     def __init__(self, *args, **kwargs):
-        self.task_manager = CITBTaskManager()
+        self.task_manager = OneShotTaskManager()
         super().__init__(*args, **kwargs)
     
     def do_GET(self):
         """Handle GET requests"""
         if self.path == '/health':
-            self.send_json_response(200, {"status": "healthy", "service": "citb-tool-server"})
+            self.send_json_response(200, {"status": "healthy", "service": "oneshot-tool-server"})
         else:
             self.send_error(404, "Not Found")
     
@@ -148,9 +151,9 @@ class CITBHTTPHandler(BaseHTTPRequestHandler):
 
 def run_server(host: str = '127.0.0.1', port: int = 8080):
     """Run the HTTP server"""
-    logger.info(f"Starting CITB Tool Server on {host}:{port}")
+    logger.info(f"Starting OneShot Tool Server on {host}:{port}")
     
-    server = HTTPServer((host, port), CITBHTTPHandler)
+    server = HTTPServer((host, port), OneShotHTTPHandler)
     
     logger.info(f"Server listening on http://{host}:{port}")
     logger.info("Endpoints:")
@@ -172,7 +175,7 @@ def run_server(host: str = '127.0.0.1', port: int = 8080):
 
 def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description='CITB HTTP Tool Server')
+    parser = argparse.ArgumentParser(description='OneShot HTTP Tool Server')
     parser.add_argument('--host', default='127.0.0.1', help='Host to bind to')
     parser.add_argument('--port', type=int, default=8080, help='Port to listen on')
     args = parser.parse_args()

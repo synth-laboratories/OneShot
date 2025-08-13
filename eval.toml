@@ -1,0 +1,12 @@
+[modal]
+# Logical app name for Modal runs
+app_name = "codex-coach"
+
+# Volume names used by the Modal runner
+artifacts_volume = "codex-artifacts"
+codex_volume = "codex-installation"
+
+# Name of the Modal secret that contains your OpenAI key
+openai_secret = "openai-api-keys"
+
+

@@ -15,29 +15,29 @@ NC='\033[0m'
 clear
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}CITB MCP Server Monitor${NC}"
+echo -e "${GREEN}OneShot MCP Server Monitor${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
 # Test if the server responds
 echo -e "${BLUE}Testing MCP server...${NC}"
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
-    python3 "$SCRIPT_DIR/mcp_citb_server.py" 2>/dev/null | \
+    python3 "$SCRIPT_DIR/mcp_oneshot_server.py" 2>/dev/null | \
     python3 -m json.tool > /dev/null 2>&1 && \
     echo -e "${GREEN}✓ MCP server responds correctly${NC}" || \
     echo -e "${RED}✗ MCP server not responding${NC}"
 
 echo ""
-echo -e "${YELLOW}Monitoring log file: /tmp/citb_mcp_server.out${NC}"
+echo -e "${YELLOW}Monitoring log file: /tmp/oneshot_mcp_server.out${NC}"
 echo -e "${YELLOW}This will show all MCP server activity${NC}"
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
 # Create log file if it doesn't exist
-touch /tmp/citb_mcp_server.out
+touch /tmp/oneshot_mcp_server.out
 
 # Tail the log with timestamps
-tail -f /tmp/citb_mcp_server.out | while IFS= read -r line; do
+tail -f /tmp/oneshot_mcp_server.out | while IFS= read -r line; do
     echo "[$(date '+%H:%M:%S')] $line"
 done

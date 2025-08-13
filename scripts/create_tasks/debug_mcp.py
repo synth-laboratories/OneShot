@@ -36,16 +36,16 @@ def pretty_json(data):
 
 def main():
     print(f"{GREEN}{'='*60}{NC}")
-    print(f"{GREEN}CITB MCP Server Debug Monitor{NC}")
+    print(f"{GREEN}OneShot MCP Server Debug Monitor{NC}")
     print(f"{GREEN}{'='*60}{NC}")
     print()
     
     # Path to the actual MCP server
-    server_path = Path(__file__).parent / "mcp_citb_server.py"
+    server_path = Path(__file__).parent / "mcp_oneshot_server.py"
     
     print(f"{BLUE}Server:{NC} {server_path}")
     print(f"{BLUE}Mode:{NC} stdio (JSON-RPC over stdin/stdout)")
-    print(f"{BLUE}Log:{NC} /tmp/citb_mcp_server.out")
+    print(f"{BLUE}Log:{NC} /tmp/oneshot_mcp_server.out")
     print()
     
     # Start the MCP server as a subprocess

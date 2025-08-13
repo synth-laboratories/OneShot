@@ -1,5 +1,5 @@
 #!/bin/bash
-# Orchestrator script for running Codex with CITB task creation
+# Orchestrator script for running Codex with OneShot task creation
 # This script sets up the environment, starts necessary servers, and runs Codex
 
 set -e
@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 TOOL_SERVER_PORT=8080
 PROXY_PORT=18080
-RUN_ID="citb_$(date +%Y%m%d_%H%M%S)_$$"
+RUN_ID="oneshot_$(date +%Y%m%d_%H%M%S)_$$"
 
 # Colors for output
 RED='\033[0;31m'
@@ -46,7 +46,7 @@ cleanup() {
     fi
     
     # Remove state file if exists
-    rm -f /tmp/citb_state.json
+    rm -f /tmp/oneshot_state.json
 }
 
 trap cleanup EXIT
@@ -67,7 +67,7 @@ Options:
     -t, --title TITLE           Task title (required)
     -n, --notes NOTES          Task notes/instructions
     -f, --file FILE            File containing instructions (alternative to -n)
-    -d, --docker               Run in Docker container (CITB mode)
+    -d, --docker               Run in Docker container (OneShot mode)
     -p, --start-proxy          Start proxy workers (if not already running)
     -m, --mcp                  Use MCP server instead of HTTP
     -h, --help                 Show this help message
@@ -150,7 +150,7 @@ fi
 # Export run ID for tracing
 export RUN_ID="$RUN_ID"
 
-log_info "Starting CITB task creation"
+log_info "Starting OneShot task creation"
 log_info "Run ID: $RUN_ID"
 log_info "Task: $TASK_TITLE"
 
@@ -195,9 +195,9 @@ if [ "$USE_MCP" = "true" ]; then
     if [ ! -f "$CODEX_CONFIG_DIR/config.toml" ]; then
         mkdir -p "$CODEX_CONFIG_DIR"
         cat > "$CODEX_CONFIG_DIR/config.toml.example" << EOF
-[mcp_servers.citb]
+[mcp_servers.oneshot]
 command = "python3"
-args = ["$SCRIPT_DIR/mcp_citb_server.py"]
+args = ["$SCRIPT_DIR/mcp_oneshot_server.py"]
 env = { RUN_ID = "${RUN_ID}" }
 EOF
         log_info "Created example MCP config at $CODEX_CONFIG_DIR/config.toml.example"
@@ -252,7 +252,7 @@ $TASK_NOTES"
 fi
 
 # Create prompt file
-PROMPT_FILE="/tmp/citb_prompt_${RUN_ID}.txt"
+PROMPT_FILE="/tmp/oneshot_prompt_${RUN_ID}.txt"
 echo "$CODEX_PROMPT" > "$PROMPT_FILE"
 
 log_info "Prompt saved to: $PROMPT_FILE"
@@ -269,7 +269,7 @@ if [ "$DOCKER_MODE" = "true" ]; then
         -e HTTP_PROXY="http://host.docker.internal:$PROXY_PORT" \
         -e RUN_ID="$RUN_ID" \
         --add-host host.docker.internal:host-gateway \
-        codex-citb \
+        codex-oneshot \
         bash -c "cat $PROMPT_FILE | codex"
 else
     log_info "Running Codex on host..."
@@ -286,12 +286,12 @@ else
 fi
 
 # Check if task was completed
-if [ -f /tmp/citb_state.json ]; then
+if [ -f /tmp/oneshot_state.json ]; then
     log_warn "Task was started but not completed (state file still exists)"
-    log_info "State file: /tmp/citb_state.json"
+    log_info "State file: /tmp/oneshot_state.json"
     
     # Show task details
-    TASK_SLUG=$(jq -r '.task_slug' /tmp/citb_state.json)
+    TASK_SLUG=$(jq -r '.task_slug' /tmp/oneshot_state.json)
     log_info "Task slug: $TASK_SLUG"
 else
     # Look for created task directory
@@ -321,4 +321,4 @@ else
     fi
 fi
 
-log_info "CITB task creation completed"
+log_info "OneShot task creation completed"

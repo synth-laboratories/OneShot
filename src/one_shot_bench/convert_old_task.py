@@ -20,22 +20,9 @@ def convert_git_url(url: str, repo_info: Dict[str, Any]) -> tuple[str, Dict[str,
         url = url.replace("git@github.com:", "https://github.com/")
     
     # Check for known problematic repositories and replace with working ones
-    problematic_repos = {
-        "https://github.com/synth-laboratories/research.git": {
-            "replacement": "https://github.com/synth-laboratories/synth-ai.git",
-            "branch": "main",
-            "commit": "75339c2",
-            "reason": "Private repository, using public synth-ai instead"
-        }
-    }
-    
-    if url in problematic_repos:
-        fix = problematic_repos[url]
-        print(f"   ⚠️  Replacing problematic repo: {fix['reason']}")
-        url = fix["replacement"]
-        repo_info["branch"] = fix["branch"]
-        repo_info["start_commit_sha"] = fix["commit"]
-        repo_info["end_commit_sha"] = fix["commit"]
+    # No fallback mappings; enforce valid public URL instead
+    if not url.startswith("https://github.com/"):
+        raise ValueError(f"Unsupported git_url: {url}. Please use a public HTTPS GitHub URL.")
     
     return url, repo_info
 
@@ -77,7 +64,9 @@ def test_changes_made():
 def create_dockerfile_content(task_meta: Dict[str, Any]) -> str:
     """Generate Dockerfile content."""
     repo = task_meta.get("repo", {})
-    git_url = repo.get("git_url", "https://github.com/synth-laboratories/synth-ai.git")
+    git_url = repo.get("git_url", "")
+    if not git_url:
+        raise ValueError("tb_meta.repo.git_url is required and must be a public HTTPS GitHub URL")
     branch = repo.get("branch", "main")
     commit = repo.get("start_commit_sha", "HEAD")
     task_id = task_meta.get("task_id", "unknown")

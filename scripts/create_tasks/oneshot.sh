@@ -1,13 +1,13 @@
 #!/bin/bash
-# Run OpenAI Codex with CITB MCP tools configured
+# Run OpenAI Codex with OneShot MCP tools configured
 # This ensures MCP server is configured and runs codex-synth (which wraps codex)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-MCP_SERVER_PATH="$SCRIPT_DIR/mcp_citb_server.py"
-RUN_ID="citb_$(date +%Y%m%d_%H%M%S)_$$"
+MCP_SERVER_PATH="$SCRIPT_DIR/mcp_oneshot_server.py"
+RUN_ID="oneshot_$(date +%Y%m%d_%H%M%S)_$$"
 
 # Ensure MCP is configured for codex
 "$SCRIPT_DIR/setup_codex_mcp.sh"
@@ -18,7 +18,7 @@ export RUN_ID="$RUN_ID"
 cd "$REPO_ROOT"
 
 echo "=================================="
-echo "CITB-enabled Codex Session"
+echo "OneShot-enabled Codex Session"
 echo "Run ID: $RUN_ID"
 echo "=================================="
 echo ""

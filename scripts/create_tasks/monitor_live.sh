@@ -4,14 +4,14 @@
 
 clear
 echo "========================================"
-echo "CITB MCP Server Live Monitor"
+echo "OneShot MCP Server Live Monitor"
 echo "========================================"
 echo ""
-echo "Monitoring: /tmp/citb_mcp_server.out"
+echo "Monitoring: /tmp/oneshot_mcp_server.out"
 echo ""
 
 # Watch for tool calls and results
-tail -f /tmp/citb_mcp_server.out | while IFS= read -r line; do
+tail -f /tmp/oneshot_mcp_server.out | while IFS= read -r line; do
     # Highlight important lines
     if echo "$line" | grep -q "Tool call:"; then
         echo -e "\033[1;32m>>> $line\033[0m"  # Green for tool calls
