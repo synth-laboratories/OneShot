@@ -127,7 +127,7 @@ ARG TASK_ID="{task_meta.get('task_id', 'unknown')}"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
-# Install system dependencies
+# Install system dependencies (include util-linux for 'script' and expect to drive PTY)
 RUN apt-get update && apt-get install -y \\
     git \\
     curl \\
@@ -140,6 +140,8 @@ RUN apt-get update && apt-get install -y \\
     less \\
     jq \\
     ca-certificates \\
+    util-linux \\
+    expect \\
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js and npm
