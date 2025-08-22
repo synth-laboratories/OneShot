@@ -67,6 +67,7 @@ Artifacts and results will appear under `data/runs/<run_id>/`.
 - Creating a task (Codex MCP, one-shot): `guides/creating-a-task.md`
 - Running tasks sequentially with Docker: `guides/docker-sequential.md`
 - Running tasks in parallel with Modal: `guides/modal-parallel.md`
+- Running on Modal (setup + single-run): `guides/modal.md`
 - Using Hugging Face datasets: `guides/huggingface.md`
 
 ### Hugging Face integration
@@ -101,4 +102,3 @@ Artifacts and results will appear under `data/runs/<run_id>/`.
   uv tool install modal && modal setup
   SANDBOX_BACKEND=modal bash scripts/run_codex_box.sh data/tasks/prepared/<slug>
   ```
-
