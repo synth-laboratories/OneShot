@@ -2,6 +2,7 @@
 set -euo pipefail
 
 # Start a local MITM proxy used by one-shot-bench. Logs to /tmp and runs in background.
+# Also ensures codex-synth and MCP tools are installed and configured.
 
 PORT="${PORT:-18080}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,11 +35,54 @@ kill_port_listeners() {
   fi
 }
 
+# Check if codex-synth is installed
+check_codex_synth() {
+  if command -v codex-synth >/dev/null 2>&1; then
+    echo "[setup] ✓ codex-synth is already installed"
+    return 0
+  else
+    echo "[setup] Installing codex-synth..."
+    if bash "$REPO_ROOT/scripts/install_codex_synth.sh"; then
+      echo "[setup] ✓ codex-synth installed successfully"
+      return 0
+    else
+      echo "[setup] ✗ Failed to install codex-synth"
+      return 1
+    fi
+  fi
+}
+
+# Check if MCP is configured
+check_mcp_config() {
+  local config_file="$HOME/.codex/config.toml"
+  if [ -f "$config_file" ] && grep -q "\[mcp_servers.oneshot\]" "$config_file" 2>/dev/null; then
+    echo "[setup] ✓ MCP tools are already configured"
+    return 0
+  else
+    echo "[setup] Setting up MCP tools..."
+    if bash "$REPO_ROOT/scripts/create_tasks/setup_codex_mcp.sh"; then
+      echo "[setup] ✓ MCP tools configured successfully"
+      return 0
+    else
+      echo "[setup] ✗ Failed to configure MCP tools"
+      return 1
+    fi
+  fi
+}
+
 # Clean up prior runs
 kill_if_pid /tmp/codex_mitm.pid
 kill_port_listeners "$PORT"
 : > /tmp/codex_mitm.out
 : > /tmp/trace_cleaner.out
+
+# Setup codex-synth and MCP if needed
+echo "[setup] Checking codex-synth installation..."
+check_codex_synth
+echo ""
+echo "[setup] Checking MCP configuration..."
+check_mcp_config
+echo ""
 
 echo "[run] starting mitmproxy on 0.0.0.0:${PORT}"
 nohup env PYTHONPATH="$REPO_ROOT" \

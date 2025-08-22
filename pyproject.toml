@@ -8,4 +8,5 @@ dependencies = [
     "hf>=0.0.8",
     "huggingface-hub>=0.34.4",
     "modal>=1.1.1",
+    "openai>=1.101.0",
 ]
