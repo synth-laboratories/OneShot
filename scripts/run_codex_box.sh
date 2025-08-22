@@ -300,6 +300,34 @@ else
     docker logs "$CONTAINER_NAME" >"$RUN_DIR/logs/container_full.log" 2>&1 || true
     docker cp "$CONTAINER_NAME:/app/tb_meta.json" "$RUN_DIR/artifacts/" 2>/dev/null || true
 
+    # Collect container traces if available
+    echo "[collect] Checking for container traces..."
+    docker cp "$CONTAINER_NAME:/runs/traces" "$RUN_DIR/traces" 2>/dev/null || true
+    if [[ -d "$RUN_DIR/traces" ]]; then
+        echo "[collect] ✓ Container traces collected"
+        # Count traces if JSON file exists
+        if [[ -f "$RUN_DIR/traces/traces.jsonl" ]]; then
+            TRACE_COUNT=$(wc -l < "$RUN_DIR/traces/traces.jsonl")
+            echo "[collect]   Found ${TRACE_COUNT} API calls in traces"
+        fi
+
+        # Copy key trace files to artifacts for inclusion in final task record
+        if [[ -f "$RUN_DIR/traces/traces.jsonl" ]]; then
+            cp "$RUN_DIR/traces/traces.jsonl" "$RUN_DIR/artifacts/traces.jsonl"
+            echo "[collect] ✓ Traces JSON included in task record"
+        fi
+        if [[ -f "$RUN_DIR/traces/session_summary.md" ]]; then
+            cp "$RUN_DIR/traces/session_summary.md" "$RUN_DIR/artifacts/session_summary.md"
+            echo "[collect] ✓ Session summary included in task record"
+        fi
+        if [[ -f "$RUN_DIR/traces/session_info.txt" ]]; then
+            cp "$RUN_DIR/traces/session_info.txt" "$RUN_DIR/artifacts/session_info.txt"
+            echo "[collect] ✓ Session info included in task record"
+        fi
+    else
+        echo "[collect] ! No container traces found (tracing may be disabled or failed)"
+    fi
+
     # Display key results like synth-research
     echo "[results] ========================================"
     echo "[results] Git diff (container):"
@@ -310,35 +338,137 @@ else
     fi
     echo "[results] ----------------------------------------"
     if [[ -s "$RUN_DIR/artifacts/tb_evaluation_results.json" ]]; then
-        EVAL_JSON_PATH="$RUN_DIR/artifacts/tb_evaluation_results.json" python3 - << 'PY'
-import os, json
-p = os.environ['EVAL_JSON_PATH']
-if not os.path.exists(p):
-    print('[results] No tb_evaluation_results.json found')
-    raise SystemExit(0)
-data = json.load(open(p))
-evaluation = data.get('evaluation', {})
-total = evaluation.get('total_score', 0.0)
-print(f"[results] Rubric total score: {total:.0%}")
-rubrics = evaluation.get('rubrics', {})
-if isinstance(rubrics, dict):
-    for rid, r in rubrics.items():
-        score = r.get('score', 0.0)
-        weight = r.get('weight', 1)
-        print(f"[results]  - {rid}: {score:.0%} (weight={weight})")
-tests = data.get('test_results', {})
-passed = sum(1 for v in tests.values() if v.get('success'))
-failed = sum(1 for v in tests.values() if not v.get('success'))
-print(f"[results] Unit tests: {passed} passed, {failed} failed")
-PY
+        # Use gtimeout if available (from coreutils), otherwise skip timeout
+        TIMEOUT_CMD=""
+        if command -v gtimeout >/dev/null 2>&1; then
+            TIMEOUT_CMD="gtimeout 10"
+        elif command -v timeout >/dev/null 2>&1 && timeout 1 true 2>/dev/null; then
+            TIMEOUT_CMD="timeout 10"
+        fi
+        
+        $TIMEOUT_CMD python3 - "$RUN_DIR/artifacts/tb_evaluation_results.json" << 'EOF' || echo "[results] Evaluation parsing failed"
+import os, json, sys
+
+try:
+    eval_file = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EVAL_JSON_PATH", "")
+    if not eval_file or not os.path.exists(eval_file):
+        print("[results] No tb_evaluation_results.json found")
+        sys.exit(0)
+    
+    with open(eval_file) as f:
+        data = json.load(f)
+    
+    evaluation = data.get("evaluation", {})
+    total = evaluation.get("total_score", 0.0)
+    print(f"[results] Rubric total score: {total:.0%}")
+    rubrics = evaluation.get("rubrics", {})
+    if isinstance(rubrics, dict):
+        for rid, r in rubrics.items():
+            score = r.get("score", 0.0)
+            weight = r.get("weight", 1)
+            print(f"[results]  - {rid}: {score:.0%} (weight={weight})")
+    
+    # UNIT TEST SECTION
+    tests = data.get("test_results", {})
+    passed = sum(1 for v in tests.values() if v.get("success"))
+    failed = sum(1 for v in tests.values() if not v.get("success"))
+    print(f"[results] ----------------------------------------")
+    print(f"[results] UNIT TESTS:")
+    print(f"[results] {passed} passed, {failed} failed")
+    
+    # LLM JUDGE RUBRIC SCORES section
+    lm_eval = data.get("lm_evaluation")
+    if lm_eval:
+        print(f"[results] ----------------------------------------")
+        model_name = lm_eval.get("metadata", {}).get("model", "unknown")
+        print(f"[results] LLM JUDGE RUBRIC SCORES (Model: {model_name}):")
+        lm_score = lm_eval.get("weighted_score", 0.0)
+        print(f"[results] LLM total score: {lm_score:.0%}")
+        
+        # Show individual LLM rubric scores with reasoning
+        lm_rubrics = lm_eval.get("rubric_scores", [])
+        if lm_rubrics:
+            for rubric_data in lm_rubrics:
+                rid = rubric_data.get("rubric_id", "unknown")
+                score = rubric_data.get("score", 0.0)
+                reasoning = rubric_data.get("reasoning", "No reasoning provided")
+                print(f"[results]  - {rid} ({score:.0%}): {reasoning}")
+        
+        # Show overall summary if available
+        summary = lm_eval.get("summary", "")
+        if summary:
+            print(f"[results] Summary: {summary}")
+
+except Exception as e:
+    print(f"[results] Error parsing evaluation: {e}")
+finally:
+    sys.exit(0)
+EOF
     else
         echo "[results] No tb_evaluation_results.json found"
     fi
     echo "[results] ========================================"
+
+    # Display trace summary if available
+    if [[ -f "$RUN_DIR/traces/traces.jsonl" ]]; then
+        echo "[traces] ========================================"
+        echo "[traces] Container Trace Summary:"
+
+        # Show session info if available
+        if [[ -f "$RUN_DIR/traces/session_info.txt" ]]; then
+            SESSION_ID=$(grep "Session ID:" "$RUN_DIR/traces/session_info.txt" | head -1 | cut -d: -f2 | sed 's/^ *//')
+            TASK_ID=$(grep "Task ID:" "$RUN_DIR/traces/session_info.txt" | head -1 | cut -d: -f2 | sed 's/^ *//')
+            if [[ -n "$SESSION_ID" ]]; then
+                echo "[traces] Session ID: ${SESSION_ID}"
+            fi
+            if [[ -n "$TASK_ID" ]]; then
+                echo "[traces] Task ID: ${TASK_ID}"
+            fi
+        fi
+
+        TRACE_COUNT=$(wc -l < "$RUN_DIR/traces/traces.jsonl")
+        echo "[traces] Total API calls captured: ${TRACE_COUNT}"
+
+        # Show git changes (session delta) if available
+        if [[ -f "$RUN_DIR/traces/session_summary.md" ]]; then
+            echo "[traces] Git Changes Made:"
+            # Extract git changes from markdown
+            sed -n '/^- \*\*/,/^$/p' "$RUN_DIR/traces/session_summary.md" | head -10 | \
+            while read line; do
+                if [[ "$line" =~ ^-\ \*\* ]]; then
+                    echo "[traces]   ${line}"
+                fi
+            done
+        fi
+
+        # Show top endpoints if jq is available
+        if command -v jq >/dev/null 2>&1; then
+            echo "[traces] Top API endpoints:"
+            jq -r '.url' "$RUN_DIR/traces/traces.jsonl" | \
+                sed 's|https://api.openai.com/v1/||' | \
+                sort | uniq -c | sort -nr | head -3 | \
+                while read count endpoint; do
+                    echo "[traces]   ${count} calls: ${endpoint}"
+                done
+        fi
+
+        # Show trace file locations
+        echo "[traces] Trace files:"
+        echo "[traces]   JSON traces: $RUN_DIR/traces/traces.jsonl"
+        echo "[traces]   Raw database: $RUN_DIR/traces/container_raw.db"
+        echo "[traces]   Session summary: $RUN_DIR/traces/session_summary.md"
+        if [[ -f "$RUN_DIR/traces/trace_summary.txt" ]]; then
+            echo "[traces]   Detailed analysis: $RUN_DIR/traces/trace_summary.txt"
+        fi
+        echo "[traces] ========================================"
+    fi
 
     echo "[cleanup] Removing container"
     docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
 
 echo "Run artifacts in: $RUN_DIR"
+
+# Explicitly exit to ensure script terminates
+exit 0
 

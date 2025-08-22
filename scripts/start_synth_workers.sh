@@ -70,11 +70,27 @@ check_mcp_config() {
   fi
 }
 
-# Clean up prior runs
+# Clean up prior runs more aggressively
+echo "[cleanup] Cleaning up previous proxy processes..."
+
+# Kill any existing proxy processes
 kill_if_pid /tmp/codex_mitm.pid
+kill_if_pid /tmp/trace_cleaner.pid
+
+# Kill any mitmdump processes
+pkill -f "mitmdump.*mitm_tracer.py" || true
+
+# Kill any trace cleaner processes
+pkill -f "trace_cleaner" || true
+
+# Force kill any remaining processes on the port
 kill_port_listeners "$PORT"
+
+# Clean up log files
 : > /tmp/codex_mitm.out
 : > /tmp/trace_cleaner.out
+
+echo "[cleanup] Cleanup completed"
 
 # Setup codex-synth and MCP if needed
 echo "[setup] Checking codex-synth installation..."

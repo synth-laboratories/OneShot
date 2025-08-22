@@ -189,6 +189,19 @@ RUN mkdir -p /app/artifacts
 # Install Python test dependencies
 RUN pip3 install --break-system-packages pytest
 
+# Install mitmproxy for container-side tracing
+RUN pip3 install --break-system-packages mitmproxy
+
+# Create directories for container-side tracing
+RUN mkdir -p /app/traces /app/src
+
+# Copy tracing scripts from host
+COPY src/local_tracing/ /app/src/local_tracing/
+RUN chmod +x /app/src/local_tracing/*.py
+
+# Expose proxy port internally
+EXPOSE 18080
+
 # Set up environment
 ENV TASK_ID=${{TASK_ID}}
 ENV PYTHONUNBUFFERED=1
@@ -271,7 +284,18 @@ def prepare_task(created_task_path: Path, prepared_dir: Path) -> None:
         print("   Copied codex-synth wrapper")
     else:
         print(f"   ⚠️  Warning: Template codex-synth not found at {codex_src}")
-    
+
+    # Copy container tracing scripts
+    scripts_dir = Path(__file__).parents[2] / "scripts"
+    for script_name in ["container_start_proxy.sh", "export_container_traces.sh", "container_trace_health_check.sh"]:
+        script_src = scripts_dir / script_name
+        if script_src.exists():
+            shutil.copy(script_src, overlay_dir / script_name)
+            os.chmod(overlay_dir / script_name, 0o755)
+            print(f"   Copied {script_name}")
+        else:
+            print(f"   ⚠️  Warning: Script {script_name} not found at {script_src}")
+
     # Copy other files from created task
     for file_name in ["LM_INSTRUCTIONS.md", "repo_info.json", "diff.patch", "notes.md"]:
         src_file = created_task_path / file_name
