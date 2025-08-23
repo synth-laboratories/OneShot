@@ -1,0 +1,41 @@
+Evaluation state for add-hello-world-to-readme
+
+Rubrics
+- Present in prepared task: tb_meta.json defines 3 rubrics (task_completion, code_quality, testing).
+
+Unit tests
+- Present only as embedded entries in tb_meta.json (2 test_scripts). They are not materialized to files.
+- Docker image installs pytest, but no tests are copied into the image nor executed.
+
+Runtime pipeline (current)
+- run_codex_box.sh builds image, runs container, collects artifacts/logs; does not run host-side evaluation.
+- box_bootstrap.sh executes Codex, now creates a baseline commit and captures diffs/patches, but does not run tests.
+- Overlays: overlay_files → /app, overlay_repo_files → /app/repo (works via overrides.json).
+
+Gaps
+- Tests defined in tb_meta.json are never written to disk or executed, so no automated pass/fail signal.
+- The prepared task’s evaluation/ directory (if any) is not copied into the image.
+
+Recommended minimal additions to run tests at end (inside Docker)
+- At prepare time: materialize tb_meta.evaluation.test_scripts to files under overlay_files/evaluation/ (e.g., test_task_completion.py, test_code_runs.py).
+- In Dockerfile: ensure evaluation/ is copied into /app/evaluation.
+- In box_bootstrap.sh (after Codex run, before summary):
+  - Run: cd /app/repo; pytest -q /app/evaluation -q -k '' -vv --maxfail=1 2>&1 | tee /app/artifacts/pytest.txt; echo $? > /app/artifacts/pytest_exit_code.txt
+  - Optionally write a small JSON summary to /app/artifacts/pytest_results.json (counts pass/fail).
+
+Optional host-side scoring
+- After container exit, parse artifacts (diff_from_baseline.stat/patch, pytest.txt) to compute a simple score aligned to rubrics.
+
+
+I'll search the repo for existing notes and code related to gpt-5-nano scoring and any evaluation scripts to follow.
+
+[3 tools called]
+
+- Yes. Host-side GPT-5-nano rubric scoring is already wired in `src/one_shot_bench/evaluate_run.py` using `LMRubricScorerStructured` from `src/synth_bench/evaluation/lm_rubric_scorer_structured.py` (it maps gpt-5-nano to gpt-4o-mini under the hood).
+- Notes are in `guides/docker-sequential.md` and the printing logic in `src/one_shot_bench/no.sh` references the LM evaluation block.
+
+Run it after the container finishes:
+- Command: `uv run python -m one_shot_bench.evaluate_run <run_dir> <prepared_task_dir>`
+- Output: writes `evaluation_results.json` (with `lm_evaluation.weighted_score` and rubric breakdown) and `scoring_results.md` into the run directory.
+
+If you want it automatic at the end, I can update `scripts/run_codex_box.sh` to invoke the module path instead of looking for `scripts/evaluate_run.py`.

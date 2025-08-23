@@ -33,14 +33,12 @@ class TaskEvaluationResult:
 class LMRubricScorerStructured:
     """LM-based rubric scorer using structured outputs for objective evaluation."""
     
-    def __init__(self, model: str = "gpt-4o-mini", temperature: float = 0.1):
+    def __init__(self, model: str = "gpt-5-nano", temperature: float = 1.0):
         self.model = model
-        self.temperature = temperature
+        # gpt-5-nano only supports temperature=1
+        self.temperature = 1.0 if model == "gpt-5-nano" else temperature
         self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         
-        # Map model names 
-        if model == "gpt-5-nano":
-            self.model = "gpt-4o-mini"  # Use available model
     
     async def evaluate_task(
         self, 
