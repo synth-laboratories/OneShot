@@ -1,0 +1,12 @@
+{
+  "created_at": "20250823__23-06-26",
+  "rollout_dir": "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/rollouts/hello_world/20250823__23-06-26",
+  "runs": [
+    "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/runs/20250823__23-06-26-0",
+    "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/runs/20250823__23-06-26-1"
+  ],
+  "tasks": [
+    "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/tasks/prepared/add-hello-world-to-readme",
+    "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/tasks/prepared/create-codebasemd-from-specs-and-src-patterns"
+  ]
+}

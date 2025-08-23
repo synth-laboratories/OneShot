@@ -77,63 +77,69 @@ if [[ -f "$TASK_PATH_INPUT/tb_meta.json" && ! -f "$TASK_PATH_INPUT/Dockerfile" ]
     fi
 fi
 
-# Apply overrides.json (prompt and file overlays) if present
-OVERRIDES_FILE="$TASK_PATH_INPUT/overrides.json"
-if [[ -f "$OVERRIDES_FILE" ]]; then
-    echo "[overrides] Detected overrides.json"
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "Error: jq is required to process overrides.json" >&2
-        exit 1
+# Apply overrides.json (prompt and file overlays) if requested
+if [[ "${ROLLOUT_APPLY_OVERRIDES:-1}" == "1" ]]; then
+    if [[ -n "${ROLLOUT_OVERRIDES_FILE:-}" ]]; then
+        OVERRIDES_FILE="${ROLLOUT_OVERRIDES_FILE}"
+    else
+        OVERRIDES_FILE="$TASK_PATH_INPUT/overrides.json"
     fi
+    if [[ -f "$OVERRIDES_FILE" ]]; then
+        echo "[overrides] Using overrides file: $OVERRIDES_FILE"
+        if ! command -v jq >/dev/null 2>&1; then
+            echo "Error: jq is required to process overrides.json" >&2
+            exit 1
+        fi
 
-    # Ensure overlay directories exist
-    mkdir -p "$TASK_PATH_INPUT/overlay_files"
-    mkdir -p "$TASK_PATH_INPUT/overlay_repo_files"
+        # Ensure overlay directories exist
+        mkdir -p "$TASK_PATH_INPUT/overlay_files"
+        mkdir -p "$TASK_PATH_INPUT/overlay_repo_files"
 
-    # Prompt override: supports .prompt or .lm_instructions
-    PROMPT_OVERRIDE=$(jq -r '(.prompt // .lm_instructions // empty)' "$OVERRIDES_FILE")
-    if [[ -n "$PROMPT_OVERRIDE" && "$PROMPT_OVERRIDE" != "null" ]]; then
-        echo "[overrides] Overriding prompt via overlay_files/LM_INSTRUCTIONS.md"
-        printf "%s" "$PROMPT_OVERRIDE" > "$TASK_PATH_INPUT/overlay_files/LM_INSTRUCTIONS.md"
-    fi
+        # Prompt override: supports .prompt or .lm_instructions
+        PROMPT_OVERRIDE=$(jq -r '(.prompt // .lm_instructions // empty)' "$OVERRIDES_FILE")
+        if [[ -n "$PROMPT_OVERRIDE" && "$PROMPT_OVERRIDE" != "null" ]]; then
+            echo "[overrides] Overriding prompt via overlay_files/LM_INSTRUCTIONS.md"
+            printf "%s" "$PROMPT_OVERRIDE" > "$TASK_PATH_INPUT/overlay_files/LM_INSTRUCTIONS.md"
+        fi
 
-    # Overlay files under /app (overlay_files)
-    if jq -e '.overlay_files // empty' "$OVERRIDES_FILE" >/dev/null; then
-        echo "[overrides] Writing overlay_files entries"
-        while IFS= read -r entry; do
-            key=$(echo "$entry" | base64 --decode | jq -r '.key')
-            val=$(echo "$entry" | base64 --decode | jq -r '.value')
-            out_path="$TASK_PATH_INPUT/overlay_files/$key"
-            mkdir -p "$(dirname "$out_path")"
-            printf "%s" "$val" > "$out_path"
-            echo "  -> /overlay_files/$key"
-        done < <(jq -r '(.overlay_files // {}) | to_entries[] | @base64' "$OVERRIDES_FILE")
-    fi
+        # Overlay files under /app (overlay_files)
+        if jq -e '.overlay_files // empty' "$OVERRIDES_FILE" >/dev/null; then
+            echo "[overrides] Writing overlay_files entries"
+            while IFS= read -r entry; do
+                key=$(echo "$entry" | base64 --decode | jq -r '.key')
+                val=$(echo "$entry" | base64 --decode | jq -r '.value')
+                out_path="$TASK_PATH_INPUT/overlay_files/$key"
+                mkdir -p "$(dirname "$out_path")"
+                printf "%s" "$val" > "$out_path"
+                echo "  -> /overlay_files/$key"
+            done < <(jq -r '(.overlay_files // {}) | to_entries[] | @base64' "$OVERRIDES_FILE")
+        fi
 
-    # Overlay files into cloned repo (overlay_repo_files)
-    if jq -e '.overlay_repo_files // empty' "$OVERRIDES_FILE" >/dev/null; then
-        echo "[overrides] Writing overlay_repo_files entries"
-        while IFS= read -r entry; do
-            key=$(echo "$entry" | base64 --decode | jq -r '.key')
-            val=$(echo "$entry" | base64 --decode | jq -r '.value')
-            out_path="$TASK_PATH_INPUT/overlay_repo_files/$key"
-            mkdir -p "$(dirname "$out_path")"
-            printf "%s" "$val" > "$out_path"
-            echo "  -> /overlay_repo_files/$key"
-        done < <(jq -r '(.overlay_repo_files // {}) | to_entries[] | @base64' "$OVERRIDES_FILE")
-    fi
+        # Overlay files into cloned repo (overlay_repo_files)
+        if jq -e '.overlay_repo_files // empty' "$OVERRIDES_FILE" >/dev/null; then
+            echo "[overrides] Writing overlay_repo_files entries"
+            while IFS= read -r entry; do
+                key=$(echo "$entry" | base64 --decode | jq -r '.key')
+                val=$(echo "$entry" | base64 --decode | jq -r '.value')
+                out_path="$TASK_PATH_INPUT/overlay_repo_files/$key"
+                mkdir -p "$(dirname "$out_path")"
+                printf "%s" "$val" > "$out_path"
+                echo "  -> /overlay_repo_files/$key"
+            done < <(jq -r '(.overlay_repo_files // {}) | to_entries[] | @base64' "$OVERRIDES_FILE")
+        fi
 
-    # Evaluation overrides (replace defaults): prefer .evaluation, else .rubrics/.test_scripts
-    if jq -e '.evaluation // .rubrics // .test_scripts' "$OVERRIDES_FILE" >/dev/null; then
-        echo "[overrides] Applying evaluation overrides to tb_meta.json"
-        TB_META="$TASK_PATH_INPUT/tb_meta.json"
-        if [[ -f "$TB_META" ]]; then
-            # Build a normalized evaluation JSON from overrides
-            EVAL_JSON=$(jq -c '{evaluation: (if .evaluation then .evaluation else {rubrics: (.rubrics // []), test_scripts: (.test_scripts // [])} end)}' "$OVERRIDES_FILE")
-            tmp_meta=$(mktemp)
-            jq --argjson ov "$EVAL_JSON" '(.evaluation) = $ov.evaluation' "$TB_META" > "$tmp_meta" && mv "$tmp_meta" "$TB_META"
-        else
-            echo "Warning: tb_meta.json not found for evaluation override" >&2
+        # Evaluation overrides (replace defaults): prefer .evaluation, else .rubrics/.test_scripts
+        if jq -e '.evaluation // .rubrics // .test_scripts' "$OVERRIDES_FILE" >/dev/null; then
+            echo "[overrides] Applying evaluation overrides to tb_meta.json"
+            TB_META="$TASK_PATH_INPUT/tb_meta.json"
+            if [[ -f "$TB_META" ]]; then
+                # Build a normalized evaluation JSON from overrides
+                EVAL_JSON=$(jq -c '{evaluation: (if .evaluation then .evaluation else {rubrics: (.rubrics // []), test_scripts: (.test_scripts // [])} end)}' "$OVERRIDES_FILE")
+                tmp_meta=$(mktemp)
+                jq --argjson ov "$EVAL_JSON" '(.evaluation) = $ov.evaluation' "$TB_META" > "$tmp_meta" && mv "$tmp_meta" "$TB_META"
+            else
+                echo "Warning: tb_meta.json not found for evaluation override" >&2
+            fi
         fi
     fi
 fi
@@ -349,7 +355,9 @@ else
     DOCKER_RUN_OPTS+=( -e "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}" )
 
     echo "[run] Starting container (attached with TTY)…"
-    CONTAINER_NAME="oneshot_${RUN_ID}"
+    # Sanitize RUN_ID for Docker container name (colons and others -> underscore)
+    SANITIZED_RUN_ID=$(echo "$RUN_ID" | sed 's/[^a-zA-Z0-9_.-]/_/g')
+    CONTAINER_NAME="oneshot_${SANITIZED_RUN_ID}"
     mkdir -p "$RUN_DIR/logs" "$RUN_DIR/artifacts"
     # Bind-mount artifacts to host so logs/results land directly without a watcher
     DOCKER_RUN_OPTS+=( -v "$RUN_DIR/artifacts:/app/artifacts" )

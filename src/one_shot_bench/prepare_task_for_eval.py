@@ -411,8 +411,12 @@ if [ -z "$PROMPT" ]; then
 fi
 
 echo "Running Codex exec (non-interactive) in /app/repo..."
+# Pass model via Codex's -m/--model flag (and also export OPENAI_MODEL for completeness)
 ( cd /app/repo && \
-  codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$PROMPT" \
+  env OPENAI_MODEL="${OPENAI_MODEL:-}" \
+  codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+    ${OPENAI_MODEL:+-m "$OPENAI_MODEL"} \
+    "$PROMPT" \
   2>&1 | tee "$ARTIFACTS_DIR/codex-run.log" )
 STATUS=${PIPESTATUS[0]}
 

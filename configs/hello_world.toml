@@ -1,0 +1,14 @@
+name = "hello_world"
+parallel = 2
+
+[[tasks]]
+prepared_dir = "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/tasks/prepared/add-hello-world-to-readme"
+model = "gpt-5-mini"
+rollouts = 2
+apply_overrides = false
+
+[[tasks]]
+prepared_dir = "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/tasks/prepared/create-codebasemd-from-specs-and-src-patterns"
+model = "gpt-5-mini"
+rollouts = 2
+apply_overrides = false
