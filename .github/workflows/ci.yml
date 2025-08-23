@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build core
+        run: |
+          cd src_rust/crates/core
+          cargo build --locked
+      - name: Test core
+        run: |
+          cd src_rust/crates/core
+          cargo test --locked --all-features
+  python-wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install maturin
+        run: pip install maturin
+      - name: Build wheel
+        run: |
+          cd src_rust/crates/py
+          maturin build --release --compatibility manylinux2014
