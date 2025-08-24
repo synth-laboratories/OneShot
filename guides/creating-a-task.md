@@ -24,7 +24,7 @@ Artifacts are written to `data/tasks/created/<task_slug>/`:
 
 Convert to prepared when ready:
 ```bash
-uv run one_shot_bench.prepare_task_for_eval --task-dir data/tasks/created/<task_id_timestamp>
+uv run one_shot.prepare_task_for_eval --task-dir data/tasks/created/<task_id_timestamp>
 ```
 
 ## B) One‑shot (non-interactive prompt)

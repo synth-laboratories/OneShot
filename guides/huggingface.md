@@ -7,7 +7,7 @@ This guide shows how to export prepared tasks to a HF-style JSONL dataset, and h
 The exporter writes JSONL records from `data/tasks/prepared/*` to `data/datasets/codex_coach_tasks/train.jsonl` by default.
 
 ```bash
-uv run one_shot_bench.hf.export --out data/datasets/codex_coach_tasks/train.jsonl --split train --validate
+uv run one_shot.hf.export --out data/datasets/codex_coach_tasks/train.jsonl --split train --validate
 ```
 
 Notes:
@@ -21,7 +21,7 @@ Use the runner to read a dataset and execute tasks in parallel on Modal.
 Example usage from a Python REPL or script:
 
 ```python
-from one_shot_bench.hf.runner import run_parallel_from_dataset, generate_report
+from one_shot.hf.runner import run_parallel_from_dataset, generate_report
 
 results = run_parallel_from_dataset(
     dataset_name="json",  # or a published HF dataset repo

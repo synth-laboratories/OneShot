@@ -124,13 +124,48 @@ def main() -> int:
     ensure_schema(clean_db)
 
     print(f"[cleaner] normalizing from {raw_db} -> {clean_db} every {poll_secs}s")
+
+    # Handle container shutdown signals gracefully
+    import signal
+    import os
+
+    def signal_handler(signum, frame):
+        print(f"[cleaner] Received signal {signum}, shutting down gracefully...")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+
     try:
         while True:
-            n = clean_once(raw_db, clean_db)
-            if n:
-                print(f"[cleaner] updated {n} sessions")
+            try:
+                n = clean_once(raw_db, clean_db)
+                if n:
+                    print(f"[cleaner] updated {n} sessions")
+                consecutive_errors = 0  # Reset error count on success
+            except sqlite3.OperationalError as e:
+                consecutive_errors += 1
+                print(f"[cleaner] Database error (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
+                if consecutive_errors >= max_consecutive_errors:
+                    print("[cleaner] Too many database errors, shutting down...")
+                    return 1
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"[cleaner] Unexpected error (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
+                if consecutive_errors >= max_consecutive_errors:
+                    print("[cleaner] Too many errors, shutting down...")
+                    return 1
+
             time.sleep(poll_secs)
+
     except KeyboardInterrupt:
+        print("[cleaner] Interrupted by user")
+        return 0
+    except SystemExit:
+        print("[cleaner] System exit requested")
         return 0
 
 

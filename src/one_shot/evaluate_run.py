@@ -7,6 +7,7 @@ Usage: python evaluate_run.py <run_dir> <task_dir>
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -41,11 +42,17 @@ def load_run_artifacts(run_dir: Path) -> Dict[str, Any]:
     """Load artifacts from a run directory."""
     artifacts = {}
     
-    # Load diff if present
-    diff_path = run_dir / "artifacts" / "diff.patch"
-    if diff_path.exists():
-        with open(diff_path) as f:
-            artifacts["diff"] = f.read()
+    # Load diff if present, fallback to container baseline diff
+    diff_candidates = [
+        run_dir / "artifacts" / "diff.patch",
+        run_dir / "artifacts" / "container_git_diff_from_baseline.patch",
+        run_dir / "artifacts" / "container_git_diff.patch",
+    ]
+    for p in diff_candidates:
+        if p.exists():
+            with open(p) as f:
+                artifacts["diff"] = f.read()
+            break
     
     # Load clean trace if present
     trace_path = run_dir / "artifacts" / "clean_session_trace.json"
@@ -66,7 +73,67 @@ def load_run_artifacts(run_dir: Path) -> Dict[str, Any]:
         with open(log_path) as f:
             artifacts["logs"] = f.read()
     
+    # Load codex run log if present
+    codex_log = run_dir / "artifacts" / "codex-run.log"
+    if codex_log.exists():
+        with open(codex_log) as f:
+            artifacts["codex_run_log"] = f.read()
+    
+    # Load codex session JSONLs if present
+    sessions_dir = run_dir / "artifacts" / "codex-sessions"
+    if sessions_dir.exists() and sessions_dir.is_dir():
+        session_files: List[Path] = list(sessions_dir.rglob("*.jsonl"))
+        sessions: List[str] = []
+        for sf in session_files:
+            try:
+                sessions.append(sf.read_text())
+            except Exception:
+                pass
+        artifacts["codex_sessions_jsonl"] = sessions
+    
     return artifacts
+
+
+def compute_agent_metrics(run_dir: Path, artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute basic agent metrics from codex logs: tokens used and tool calls."""
+    tokens_total = 0
+    tokens_events = 0
+    tool_calls_codex_log = 0
+    tool_calls_sessions = 0
+
+    # Parse tokens and tool calls from codex-run.log
+    codex_log_text = artifacts.get("codex_run_log")
+    if isinstance(codex_log_text, str):
+        for line in codex_log_text.splitlines():
+            m = re.search(r"tokens used:\s*(\d+)", line)
+            if m:
+                tokens_total += int(m.group(1))
+                tokens_events += 1
+            if "FunctionCall:" in line:
+                tool_calls_codex_log += 1
+
+    # Parse tool calls from codex session JSONL
+    sessions_texts = artifacts.get("codex_sessions_jsonl")
+    if isinstance(sessions_texts, list):
+        for text in sessions_texts:
+            for raw in text.splitlines():
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                    if obj.get("type") == "function_call":
+                        tool_calls_sessions += 1
+                except Exception:
+                    continue
+
+    return {
+        "tokens_total": tokens_total,
+        "tokens_events": tokens_events,
+        "tool_calls_codex_log": tool_calls_codex_log,
+        "tool_calls_sessions": tool_calls_sessions,
+        "tool_calls_total": tool_calls_codex_log + tool_calls_sessions,
+    }
 
 
 def collect_repo_artifacts_for_lm(repo_dir: Path) -> Dict[str, Any]:
@@ -189,7 +256,8 @@ def generate_markdown_report(
     evaluation: Dict[str, Any],
     test_results: Dict[str, Tuple[bool, str]],
     diff_content: str,
-    lm_evaluation: Optional[Dict[str, Any]] = None
+    lm_evaluation: Optional[Dict[str, Any]] = None,
+    agent_metrics: Optional[Dict[str, Any]] = None
 ) -> None:
     """Generate a markdown report of the evaluation results."""
     report_path = run_dir / "scoring_results.md"
@@ -233,6 +301,15 @@ def generate_markdown_report(
             f.write(f"\n[{lm_bar}] {lm_score:.1f}%\n")
             f.write("``" + "\n\n")
         
+        # Agent metrics
+        if agent_metrics:
+            f.write("\n## 👣 Agent Metrics\n\n")
+            f.write(f"- Token events parsed: {agent_metrics.get('tokens_events', 0)}\\n")
+            f.write(f"- Tokens (sum across events): {agent_metrics.get('tokens_total', 0)}\\n")
+            f.write(f"- Tool calls (codex-run.log): {agent_metrics.get('tool_calls_codex_log', 0)}\\n")
+            f.write(f"- Tool calls (codex-sessions): {agent_metrics.get('tool_calls_sessions', 0)}\\n")
+            f.write(f"- Tool calls (total): {agent_metrics.get('tool_calls_total', 0)}\\n\n")
+
         # Score bar visualization
         filled = int(score * 20)
         empty = 20 - filled
@@ -365,9 +442,30 @@ def generate_markdown_report(
         f.write(f"```\n{task_meta['lm']['instructions']}\n```\n\n")
         f.write("</details>\n\n")
         
+        # Final unified summary table
+        total_tests = len(test_results)
+        tests_passed = sum(1 for _p, (_ok, _out) in test_results.items() if _ok)
+        tests_failed = total_tests - tests_passed
+        lm_score_val = None
+        if lm_evaluation is not None and isinstance(lm_evaluation.get("weighted_score"), (int, float)):
+            lm_score_val = float(lm_evaluation["weighted_score"]) * 100
+        tokens_total = agent_metrics.get("tokens_total", 0) if agent_metrics else 0
+        tool_calls_total = agent_metrics.get("tool_calls_total", 0) if agent_metrics else 0
+        diff_lines_count = len(diff_content.splitlines()) if diff_content else 0
+
+        f.write("\n## ✅ Final Summary\n\n")
+        f.write("| Metric | Value |\n")
+        f.write("|---|---:|\n")
+        f.write(f"| Unit tests score | {score_pct:.0f}% |\n")
+        f.write(f"| Unit tests (pass/fail) | {tests_passed}/{tests_failed} |\n")
+        f.write(f"| LM rubric score | {lm_score_val:.0f}% |\n" if lm_score_val is not None else "| LM rubric score | N/A |\n")
+        f.write(f"| Diff lines | {diff_lines_count} |\n")
+        f.write(f"| Agent tokens (sum) | {tokens_total} |\n")
+        f.write(f"| Agent tool calls (total) | {tool_calls_total} |\n")
+
         # Footer
         f.write("---\n")
-        f.write(f"*Report generated by Terminal-Bench evaluation system*\n")
+        f.write(f"*Report generated by evaluation system*\n")
     
     print(f"Markdown report saved to: {report_path}")
 
@@ -454,6 +552,9 @@ def main():
         diff_content = artifacts["diff"]
         print(f"Found diff with {len(diff_content.splitlines())} lines")
     
+    # Compute agent metrics early
+    agent_metrics = compute_agent_metrics(run_dir, artifacts)
+
     # Check if evaluation was already done in container
     container_eval_path = run_dir / "artifacts" / "tb_evaluation_results.json"
     if container_eval_path.exists():
@@ -508,6 +609,15 @@ def main():
         print("\n" + "=" * 60)
         print(f"FINAL SCORE: {evaluation.get('total_score', 0):.0%}")
         print("=" * 60)
+
+        # Print agent metrics summary
+        if agent_metrics:
+            print("\nAgent Metrics:")
+            print("- Token events parsed:", agent_metrics.get("tokens_events", 0))
+            print("- Tokens (sum across events):", agent_metrics.get("tokens_total", 0))
+            print("- Tool calls (codex-run.log):", agent_metrics.get("tool_calls_codex_log", 0))
+            print("- Tool calls (codex-sessions):", agent_metrics.get("tool_calls_sessions", 0))
+            print("- Tool calls (total):", agent_metrics.get("tool_calls_total", 0))
         
         # Enhance evaluation with missing criterion fields
         enhanced_evaluation = evaluation.copy()
@@ -529,7 +639,8 @@ def main():
                 path: {"success": success, "output": output}
                 for path, (success, output) in test_results.items()
             },
-            "diff_lines": len(diff_content.splitlines()) if diff_content else 0
+            "diff_lines": len(diff_content.splitlines()) if diff_content else 0,
+            "agent_metrics": agent_metrics,
         }
 
         # Optionally run LM-based rubric scoring using structured outputs
@@ -592,7 +703,8 @@ def main():
             evaluation, 
             test_results,
             diff_content,
-            lm_evaluation=lm_evaluation_dict
+            lm_evaluation=lm_evaluation_dict,
+            agent_metrics=agent_metrics
         )
         
         print(f"Markdown report saved to: {run_dir / 'scoring_results.md'}")
@@ -654,6 +766,15 @@ def main():
         print("\n" + "=" * 60)
         print(f"FINAL SCORE: {evaluation['total_score']:.1%}")
         print("=" * 60)
+
+        # Print agent metrics summary
+        if agent_metrics:
+            print("\nAgent Metrics:")
+            print("- Token events parsed:", agent_metrics.get("tokens_events", 0))
+            print("- Tokens (sum across events):", agent_metrics.get("tokens_total", 0))
+            print("- Tool calls (codex-run.log):", agent_metrics.get("tool_calls_codex_log", 0))
+            print("- Tool calls (codex-sessions):", agent_metrics.get("tool_calls_sessions", 0))
+            print("- Tool calls (total):", agent_metrics.get("tool_calls_total", 0))
         
         # Save detailed results
         results_path = run_dir / "evaluation_results.json"
@@ -666,6 +787,7 @@ def main():
                 for path, (success, output) in test_results.items()
             },
             "diff_lines": len(diff_content.splitlines()) if diff_content else 0,
+            "agent_metrics": agent_metrics,
         }
 
         # Optionally run LM-based rubric scoring (gpt-5-nano structured outputs)
@@ -735,7 +857,8 @@ def main():
             evaluation, 
             test_results,
             diff_content,
-            lm_evaluation=lm_evaluation_dict
+            lm_evaluation=lm_evaluation_dict,
+            agent_metrics=agent_metrics
         )
         
     finally:

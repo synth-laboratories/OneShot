@@ -9,7 +9,7 @@ Use a local Docker sandbox to run one or many prepared tasks one-by-one.
 
 Prepare a created task for evaluation:
 ```bash
-uv run one_shot_bench.prepare_task_for_eval --task-dir data/tasks/created/<task_id_timestamp>
+uv run one_shot.prepare_task_for_eval --task-dir data/tasks/created/<task_id_timestamp>
 ```
 
 Run the eval in Docker:
@@ -21,7 +21,7 @@ scripts/run_codex_box.sh data/tasks/prepared/add-lm-tracing-readme 900 50000
 
 Results & scoring:
 - Run artifacts live under `data/runs/<run_id>/` (logs, `artifacts/`, diffs, traces)
-- After the container finishes, host-side scoring runs via `src/one_shot_bench/evaluate_run.py` and writes:
+- After the container finishes, host-side scoring runs via `src/one_shot/evaluate_run.py` and writes:
   - `data/runs/<run_id>/evaluation_results.json`
   - `data/runs/<run_id>/scoring_results.md`
 - If the container produced `artifacts/tb_evaluation_results.json`, that is used; otherwise tests run locally against the agent diff

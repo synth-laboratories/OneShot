@@ -11,7 +11,7 @@ _SRC_DIR = _REPO_ROOT / 'src'
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from one_shot_bench.hf.runner import run_parallel_from_dataset, generate_report
+from one_shot.hf.runner import run_parallel_from_dataset, generate_report
 
 
 def main() -> int:
@@ -47,7 +47,7 @@ if __name__ == "__main__":
 
 #!/usr/bin/env python3
 """
-Deprecated inline implementation kept for reference; logic now in one_shot_bench.hf.runner.
+Deprecated inline implementation kept for reference; logic now in one_shot.hf.runner.
 """
 
 import json
