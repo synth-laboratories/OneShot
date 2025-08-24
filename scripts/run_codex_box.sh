@@ -325,12 +325,28 @@ if ! docker_is_running; then
     exit 1
 fi
 
+# If task path is a prepared task, attempt to refresh it from the most recent created source
+if [[ -d "$TASK_PATH_INPUT" && -f "$TASK_PATH_INPUT/Dockerfile" && -f "$TASK_PATH_INPUT/tb_meta.json" ]]; then
+    SLUG_PREPARED="$(basename "$TASK_PATH_INPUT")"
+    CREATED_CANDIDATE=$(ls -dt "${REPO_ROOT}/data/tasks/created/${SLUG_PREPARED}_"*/ 2>/dev/null | head -n1 || true)
+    if [[ -n "$CREATED_CANDIDATE" && -d "$CREATED_CANDIDATE" ]]; then
+        echo "[prepare] Refreshing prepared task from created source: $CREATED_CANDIDATE"
+        export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
+        uv run python -m one_shot_bench.prepare_task_for_eval "$CREATED_CANDIDATE"
+        # Reset TASK_PATH_INPUT to regenerated prepared path (same slug)
+        if [[ -d "${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}" ]]; then
+            TASK_PATH_INPUT="${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}"
+            echo "[prepare] Using refreshed prepared dir: $TASK_PATH_INPUT"
+        fi
+    fi
+fi
+
 # Delegate to existing sandbox runner if present, else run a basic docker build/run
 if [[ -x "${REPO_ROOT}/scripts/run_sandbox.sh" ]]; then
     "${REPO_ROOT}/scripts/run_sandbox.sh" "$TASK_PATH_INPUT" "$RUN_DIR" "$TRACE_DIR" "${@:2}"
 else
     echo "[build] Building Docker image..."
-    docker build -t oneshot-task "$TASK_PATH_INPUT"
+    docker build --no-cache -t oneshot-task "$TASK_PATH_INPUT"
 
     echo "[run] Auth mode (billing) = $BILLING_MODE"
 
@@ -353,6 +369,17 @@ else
 
     # Force model for this run unless caller overrides OPENAI_MODEL in env
     DOCKER_RUN_OPTS+=( -e "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}" )
+    # Also pass CODEX_MODEL to align with Codex CLI expectations
+    DOCKER_RUN_OPTS+=( -e "CODEX_MODEL=${OPENAI_MODEL:-gpt-5-mini}" )
+
+    # Provide a per-run Codex config via bind mount so we don't rely on image-baked config
+    MODEL_ENV="${OPENAI_MODEL:-gpt-5-mini}"
+    CODEX_HOME_DIR="$RUN_DIR/codex_home/.codex"
+    mkdir -p "$CODEX_HOME_DIR"
+    printf 'model_provider = "openai"\nmodel = "%s"\n' "$MODEL_ENV" > "$CODEX_HOME_DIR/config.toml"
+    cp -f "$CODEX_HOME_DIR/config.toml" "$RUN_DIR/artifacts/codex-config.host.toml" 2>/dev/null || true
+    DOCKER_RUN_OPTS+=( -v "$CODEX_HOME_DIR:/root/.codex:ro" )
+    echo "[run] Mounting Codex config with model: $MODEL_ENV"
 
     echo "[run] Starting container (attached with TTY)…"
     # Sanitize RUN_ID for Docker container name (colons and others -> underscore)

@@ -1,6 +1,6 @@
 [project]
-name = "one-shot-bench"
-version = "0.1.0"
+name = "oneshot-synth"
+version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,4 +9,26 @@ dependencies = [
     "huggingface-hub>=0.34.4",
     "modal>=1.1.1",
     "openai>=1.101.0",
+    "mitmproxy>=10.3.0",
 ]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/one_shot_bench",
+  "src/local_tracing",
+  "src/synth_bench",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src",
+  "README.md",
+  "LICENSE",
+]
+
+[project.scripts]
+one-shot = "one_shot_bench.cli:main"

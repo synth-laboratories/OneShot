@@ -373,9 +373,33 @@ export CODEX_NONINTERACTIVE=1
 export RUST_LOG=${RUST_LOG:-info}
 export CODEX_TUI_RECORD_SESSION=1
 export CODEX_TUI_SESSION_LOG_PATH=/app/artifacts/codex-session.jsonl
+export OPENAI_MODEL="${OPENAI_MODEL:-gpt-5-mini}"
 
 ARTIFACTS_DIR=/app/artifacts
 mkdir -p "$ARTIFACTS_DIR"
+
+# Log chosen model (config is provided via bind mount and CLI -m)
+echo "[model] OPENAI_MODEL=${OPENAI_MODEL:-}" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+
+# Pre-run: show config locations and contents for verification
+echo "[check] whoami=$(whoami), home=$HOME" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+echo "[check] listing /root/.codex" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+ls -la /root/.codex 2>&1 | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null || true
+for p in \
+  /root/.codex/config.toml \
+  /root/.config/codex/config.toml \
+  /app/.codex/config.toml \
+  /app/config.toml; do
+  if [ -f "$p" ]; then
+    echo "[check] found $p:" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+    sed -n '1,200p' "$p" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+  else
+    echo "[check] missing $p" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+  fi
+done
+if [ -f "/root/.codex/config.toml" ]; then
+  cp -f "/root/.codex/config.toml" "$ARTIFACTS_DIR/codex-config.pre-run.toml" 2>/dev/null || true
+fi
 
 # Snapshot files before run (in /app and $HOME)
 BEFORE_SNAPSHOT=$(mktemp)
@@ -411,13 +435,19 @@ if [ -z "$PROMPT" ]; then
 fi
 
 echo "Running Codex exec (non-interactive) in /app/repo..."
-# Pass model via Codex's -m/--model flag (and also export OPENAI_MODEL for completeness)
+# Always pass model via Codex -m/--model flag; OPENAI_MODEL defaults to gpt-5-mini
 ( cd /app/repo && \
-  env OPENAI_MODEL="${OPENAI_MODEL:-}" \
+  echo "[debug] model: ${OPENAI_MODEL}" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
+  echo "[debug] codex exec -m '${OPENAI_MODEL}'" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
   codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-    ${OPENAI_MODEL:+-m "$OPENAI_MODEL"} \
+    -m "$OPENAI_MODEL" \
     "$PROMPT" \
   2>&1 | tee "$ARTIFACTS_DIR/codex-run.log" )
+
+# Persist final codex config for debugging
+if [ -f "/root/.codex/config.toml" ]; then
+  cp -f "/root/.codex/config.toml" "$ARTIFACTS_DIR/codex-config.toml" 2>/dev/null || true
+fi
 STATUS=${PIPESTATUS[0]}
 
 # Copy logs if any

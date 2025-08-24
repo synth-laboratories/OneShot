@@ -226,7 +226,7 @@ def summarize_rollout(rollout_dir: Path) -> None:
             "tools": tools,
         })
 
-    # Print table
+    # Print per-run table
     print(f"[rollouts] Summary for {rollout_dir}")
     print("| task | run | unit | lm | tokens | tools |")
     print("|---|---|---:|---:|---:|---:|")
@@ -241,12 +241,37 @@ def summarize_rollout(rollout_dir: Path) -> None:
             lm_vals.append(float(r['lm']))
         print(f"| {r['task']} | {r['run']} | {u} | {l} | {r['tokens'] or 0} | {r['tools'] or 0} |")
 
-    # Aggregates
+    # Aggregates (overall)
     unit_avg = (sum(unit_vals) / len(unit_vals)) if unit_vals else None
     lm_avg = (sum(lm_vals) / len(lm_vals)) if lm_vals else None
     print("\n[rollouts] Aggregates:")
     print(f"- Unit tests average: {unit_avg*100:.0f}%" if unit_avg is not None else "- Unit tests average: N/A")
     print(f"- LM rubric average: {lm_avg*100:.0f}%" if lm_avg is not None else "- LM rubric average: N/A")
+
+    # Per-task aggregates (mean and max across rollouts)
+    # Group rows by task
+    task_groups: Dict[str, Dict[str, List[float]]] = {}
+    for r in rows:
+        task = r["task"]
+        g = task_groups.setdefault(task, {"unit": [], "lm": []})
+        if isinstance(r["unit"], (int, float)):
+            g["unit"].append(float(r["unit"]))
+        if isinstance(r["lm"], (int, float)):
+            g["lm"].append(float(r["lm"]))
+
+    if task_groups:
+        print("\n[rollouts] Per-task aggregates (mean/max across rollouts):")
+        print("| task | rollouts | unit_mean | unit_max | lm_mean | lm_max |")
+        print("|---|---:|---:|---:|---:|---:|")
+        for task, g in sorted(task_groups.items(), key=lambda kv: kv[0]):
+            n = sum(1 for _ in (t for t in rows if t["task"] == task))
+            u_vals = g["unit"]
+            l_vals = g["lm"]
+            u_mean = f"{(sum(u_vals)/len(u_vals)*100):.0f}%" if u_vals else "N/A"
+            u_max = f"{(max(u_vals)*100):.0f}%" if u_vals else "N/A"
+            l_mean = f"{(sum(l_vals)/len(l_vals)*100):.0f}%" if l_vals else "N/A"
+            l_max = f"{(max(l_vals)*100):.0f}%" if l_vals else "N/A"
+            print(f"| {task} | {n} | {u_mean} | {u_max} | {l_mean} | {l_max} |")
 
     # Save markdown
     out_md = rollout_dir / "summary.md"
@@ -261,6 +286,19 @@ def summarize_rollout(rollout_dir: Path) -> None:
         f.write("\n## Aggregates\n\n")
         f.write((f"- Unit tests average: {unit_avg*100:.0f}%\n") if unit_avg is not None else "- Unit tests average: N/A\n")
         f.write((f"- LM rubric average: {lm_avg*100:.0f}%\n") if lm_avg is not None else "- LM rubric average: N/A\n")
+        if task_groups:
+            f.write("\n## Per-task aggregates (mean/max across rollouts)\n\n")
+            f.write("| task | rollouts | unit_mean | unit_max | lm_mean | lm_max |\n")
+            f.write("|---|---:|---:|---:|---:|---:|\n")
+            for task, g in sorted(task_groups.items(), key=lambda kv: kv[0]):
+                n = sum(1 for _ in (t for t in rows if t["task"] == task))
+                u_vals = g["unit"]
+                l_vals = g["lm"]
+                u_mean = f"{(sum(u_vals)/len(u_vals)*100):.0f}%" if u_vals else "N/A"
+                u_max = f"{(max(u_vals)*100):.0f}%" if u_vals else "N/A"
+                l_mean = f"{(sum(l_vals)/len(l_vals)*100):.0f}%" if l_vals else "N/A"
+                l_max = f"{(max(l_vals)*100):.0f}%" if l_vals else "N/A"
+                f.write(f"| {task} | {n} | {u_mean} | {u_max} | {l_mean} | {l_max} |\n")
     print(f"[rollouts] summary.md written: {out_md}")
 
 
