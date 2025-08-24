@@ -1,9 +1,0 @@
-name = "hello_world"
-parallel = 1
-
-[[tasks]]
-prepared_dir = "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/tasks/prepared/add-hello-world-to-readme"
-model = "gpt-5-nano"
-rollouts = 1
-apply_overrides = false
-
