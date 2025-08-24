@@ -128,6 +128,14 @@ if [[ "${ROLLOUT_APPLY_OVERRIDES:-1}" == "1" ]]; then
             done < <(jq -r '(.overlay_repo_files // {}) | to_entries[] | @base64' "$OVERRIDES_FILE")
         fi
 
+        # New: remove_repo_paths (list of repo-relative paths to delete in container before baseline)
+        if jq -e '.remove_repo_paths // empty' "$OVERRIDES_FILE" >/dev/null; then
+            echo "[overrides] Writing remove_repo_paths to overlay_files/remove_repo_paths.txt"
+            mkdir -p "$TASK_PATH_INPUT/overlay_files"
+            jq -r '.remove_repo_paths[]' "$OVERRIDES_FILE" > "$TASK_PATH_INPUT/overlay_files/remove_repo_paths.txt"
+            echo "  -> /overlay_files/remove_repo_paths.txt"
+        fi
+
         # Evaluation overrides (replace defaults): prefer .evaluation, else .rubrics/.test_scripts
         if jq -e '.evaluation // .rubrics // .test_scripts' "$OVERRIDES_FILE" >/dev/null; then
             echo "[overrides] Applying evaluation overrides to tb_meta.json"
@@ -139,6 +147,18 @@ if [[ "${ROLLOUT_APPLY_OVERRIDES:-1}" == "1" ]]; then
                 jq --argjson ov "$EVAL_JSON" '(.evaluation) = $ov.evaluation' "$TB_META" > "$tmp_meta" && mv "$tmp_meta" "$TB_META"
             else
                 echo "Warning: tb_meta.json not found for evaluation override" >&2
+            fi
+        fi
+
+        # Repo overrides: allow overriding git_url/branch/start_commit_sha
+        if jq -e '.repo // empty' "$OVERRIDES_FILE" >/dev/null; then
+            echo "[overrides] Applying repo overrides to tb_meta.json"
+            TB_META="$TASK_PATH_INPUT/tb_meta.json"
+            if [[ -f "$TB_META" ]]; then
+                tmp_meta=$(mktemp)
+                jq -c --slurpfile ov "$OVERRIDES_FILE" '.repo = ($ov[0].repo // .repo)' "$TB_META" > "$tmp_meta" && mv "$tmp_meta" "$TB_META"
+            else
+                echo "Warning: tb_meta.json not found for repo override" >&2
             fi
         fi
     fi
@@ -325,18 +345,21 @@ if ! docker_is_running; then
     exit 1
 fi
 
-# If task path is a prepared task, attempt to refresh it from the most recent created source
-if [[ -d "$TASK_PATH_INPUT" && -f "$TASK_PATH_INPUT/Dockerfile" && -f "$TASK_PATH_INPUT/tb_meta.json" ]]; then
-    SLUG_PREPARED="$(basename "$TASK_PATH_INPUT")"
-    CREATED_CANDIDATE=$(ls -dt "${REPO_ROOT}/data/tasks/created/${SLUG_PREPARED}_"*/ 2>/dev/null | head -n1 || true)
-    if [[ -n "$CREATED_CANDIDATE" && -d "$CREATED_CANDIDATE" ]]; then
-        echo "[prepare] Refreshing prepared task from created source: $CREATED_CANDIDATE"
-        export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
-        uv run python -m one_shot_bench.prepare_task_for_eval "$CREATED_CANDIDATE"
-        # Reset TASK_PATH_INPUT to regenerated prepared path (same slug)
-        if [[ -d "${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}" ]]; then
-            TASK_PATH_INPUT="${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}"
-            echo "[prepare] Using refreshed prepared dir: $TASK_PATH_INPUT"
+# If task path is a prepared task, optionally refresh from the most recent created source
+# Set REFRESH_PREPARED=1 to enable refresh; default is disabled to preserve manual edits
+if [[ "${REFRESH_PREPARED:-0}" == "1" ]]; then
+    if [[ -d "$TASK_PATH_INPUT" && -f "$TASK_PATH_INPUT/Dockerfile" && -f "$TASK_PATH_INPUT/tb_meta.json" ]]; then
+        SLUG_PREPARED="$(basename "$TASK_PATH_INPUT")"
+        CREATED_CANDIDATE=$(ls -dt "${REPO_ROOT}/data/tasks/created/${SLUG_PREPARED}_"*/ 2>/dev/null | head -n1 || true)
+        if [[ -n "$CREATED_CANDIDATE" && -d "$CREATED_CANDIDATE" ]]; then
+            echo "[prepare] Refreshing prepared task from created source: $CREATED_CANDIDATE"
+            export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
+            uv run python -m one_shot_bench.prepare_task_for_eval "$CREATED_CANDIDATE"
+            # Reset TASK_PATH_INPUT to regenerated prepared path (same slug)
+            if [[ -d "${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}" ]]; then
+                TASK_PATH_INPUT="${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}"
+                echo "[prepare] Using refreshed prepared dir: $TASK_PATH_INPUT"
+            fi
         fi
     fi
 fi

@@ -1280,8 +1280,8 @@ wheels = [
 ]
 
 [[package]]
-name = "one-shot"
-version = "0.1.0"
+name = "oneshot-synth"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "hf" },

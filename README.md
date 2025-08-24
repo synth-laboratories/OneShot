@@ -25,6 +25,28 @@ Motivations:
 [cleanup] Removing container
 ```
 
+
+# Spec Bench
+
+Motivation: AI coding best practices are voodoo. Agent evals are outdated and irrelevant.
+
+Does Agents.md help? How do you structure your spec?
+
+STEPS
+
+Capture meaningful evals by recording successful sessions
+Create rich rubrics and tests in the terminal with Claude
+Configure scaled experiments quickly
+
+
+BENCH EVAL
+uv run python /Users/joshuapurtell/Documents/GitHub/one-shot-bench/scripts/eval_rollouts.py run /Users/joshuapurtell/Documents/GitHub/one-shot-bench/configs/env_bench.toml
+
+uv run python /Users/joshuapurtell/Documents/GitHub/one-shot-bench/scripts/eval_rollouts.py eval hello_world --latest 
+
+
+
+
 ### Quick start
 
 1) Install codex-synth wrapper

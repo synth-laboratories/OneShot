@@ -220,9 +220,6 @@ RUN pip3 install --break-system-packages mitmproxy
 # Create directories for container-side tracing
 RUN mkdir -p /app/traces /app/src
 
-# Copy tracing scripts from cloned repo (after git clone)
-RUN cp -r /app/repo/src/local_tracing/ /app/src/local_tracing/ && chmod +x /app/src/local_tracing/*.py
-
 # Expose proxy port internally
 EXPOSE 18080
 
@@ -267,41 +264,10 @@ def prepare_task(created_task_path: Path, prepared_dir: Path) -> None:
         if original_url != fixed_url:
             print(f"   Fixed Git URL: {fixed_url}")
         
-        # Update repository URL to current remote and commit SHA to current branch tip
-        try:
-            import subprocess
-            # Get current remote URL
-            current_remote = subprocess.run(
-                ["git", "remote", "get-url", "origin"], 
-                capture_output=True, text=True, cwd=Path.cwd()
-            ).stdout.strip()
-            
-            # Convert SSH to HTTPS if needed
-            if current_remote.startswith("git@github.com:"):
-                current_remote = current_remote.replace("git@github.com:", "https://github.com/")
-            
-            # Update the repository URL
-            if current_remote and current_remote != fixed_url:
-                task_meta["repo"]["git_url"] = current_remote
-                print(f"   Updated Git URL to current remote: {current_remote}")
-            
-            # Get current commit SHA for the branch
-            branch = task_meta["repo"].get("branch", "main")
-            current_commit = subprocess.run(
-                ["git", "ls-remote", "--heads", current_remote, branch], 
-                capture_output=True, text=True, cwd=Path.cwd()
-            ).stdout.strip()
-            
-            if current_commit:
-                current_sha = current_commit.split()[0]
-                # Update both start and end commit SHA to current tip
-                task_meta["repo"]["start_commit_sha"] = current_sha
-                task_meta["repo"]["end_commit_sha"] = current_sha
-                print(f"   Updated commit SHA to current tip: {current_sha[:8]}...")
-            
-        except Exception as e:
-            print(f"   ⚠️  Warning: Could not update repository info: {e}")
-            print("   Using original repository information")
+        # Respect the task's specified repo and branch; do not overwrite with current remote.
+        # If a commit is not specified, default to HEAD at build time.
+        if not task_meta["repo"].get("start_commit_sha"):
+            task_meta["repo"]["start_commit_sha"] = "HEAD"
     
     # Convert evaluation format
     if "evaluation" in task_meta:
@@ -377,6 +343,16 @@ export OPENAI_MODEL="${OPENAI_MODEL:-gpt-5-mini}"
 
 ARTIFACTS_DIR=/app/artifacts
 mkdir -p "$ARTIFACTS_DIR"
+
+# Perform pre-baseline removals if specified
+if [ -f "/app/remove_repo_paths.txt" ]; then
+  echo "[pre] removing files listed in /app/remove_repo_paths.txt" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    echo "[pre] rm -rf /app/repo/$p" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null
+    rm -rf "/app/repo/$p" 2>/dev/null || true
+  done < "/app/remove_repo_paths.txt"
+fi
 
 # Log chosen model (config is provided via bind mount and CLI -m)
 echo "[model] OPENAI_MODEL=${OPENAI_MODEL:-}" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null

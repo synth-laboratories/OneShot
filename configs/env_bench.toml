@@ -1,0 +1,9 @@
+name = "env_bench"
+parallel = 1
+
+[[tasks]]
+prepared_dir = "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/tasks/prepared/high-sokoban"
+model = "gpt-5-nano"
+rollouts = 10
+apply_overrides = true
+overrides = "/Users/joshuapurtell/Documents/GitHub/one-shot-bench/data/tasks/prepared/high-sokoban/overrides.json"
