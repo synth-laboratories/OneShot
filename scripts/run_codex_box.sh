@@ -60,7 +60,7 @@ fi
 if [[ -f "$TASK_PATH_INPUT/tb_meta.json" && ! -f "$TASK_PATH_INPUT/Dockerfile" ]]; then
     echo "Detected created task. Preparing for evaluation..."
     export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
-    uv run python -m one_shot_bench.prepare_task_for_eval "$TASK_PATH_INPUT"
+    uv run python -m one_shot.prepare_task_for_eval "$TASK_PATH_INPUT"
     # Find prepared path by slug
     SLUG="$(basename "$TASK_PATH_INPUT")"
     # Strip trailing timestamp parts like _YYYYMMDD_HHMMSS if present
@@ -354,7 +354,7 @@ if [[ "${REFRESH_PREPARED:-0}" == "1" ]]; then
         if [[ -n "$CREATED_CANDIDATE" && -d "$CREATED_CANDIDATE" ]]; then
             echo "[prepare] Refreshing prepared task from created source: $CREATED_CANDIDATE"
             export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
-            uv run python -m one_shot_bench.prepare_task_for_eval "$CREATED_CANDIDATE"
+            uv run python -m one_shot.prepare_task_for_eval "$CREATED_CANDIDATE"
             # Reset TASK_PATH_INPUT to regenerated prepared path (same slug)
             if [[ -d "${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}" ]]; then
                 TASK_PATH_INPUT="${REPO_ROOT}/data/tasks/prepared/${SLUG_PREPARED}"

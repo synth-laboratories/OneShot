@@ -3,7 +3,7 @@
 This document captures practical conventions observed in `src/` and clarifies how to extend and maintain this repository. It is intentionally concise and opinionated; update it when behavior or patterns change.
 
 ## Repo Layout
-- `src/one_shot_bench/`: Automation for preparing, running, and evaluating tasks (Python + Bash + Makefile).
+- `src/one_shot/`: Automation for preparing, running, and evaluating tasks (Python + Bash + Makefile).
 - `src/local_tracing/`: Local MITM tracing utilities (Python modules).
 - `specs/`: Behavioral specs for key scripts/modules and this rules doc.
 - `data/`: Tasks and run artifacts used during evaluation.

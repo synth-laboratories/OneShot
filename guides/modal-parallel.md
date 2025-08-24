@@ -14,7 +14,7 @@ modal run scripts/codex_modal_runner.py::setup_codex
 
 Prepare tasks (same as Docker):
 ```bash
-uv run one_shot_bench.prepare_task_for_eval --task-dir data/tasks/created/<task_id_timestamp>
+uv run one_shot.prepare_task_for_eval --task-dir data/tasks/created/<task_id_timestamp>
 ```
 
 Run a single task on Modal:

@@ -48,7 +48,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import OneShot implementation from package
-from one_shot_bench.task_creation import OneShotTaskManager, WorktreeReadiness
+from one_shot.task_creation import OneShotTaskManager, WorktreeReadiness
 
 # MCP SDK Implementation (if available)
 if HAS_MCP_SDK:

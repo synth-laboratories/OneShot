@@ -47,11 +47,11 @@ fi
 echo "[eval] run_dir=$RUN_DIR"
 echo "[eval] task_dir=$TASK_DIR"
 
-# Ensure src is importable for -m one_shot_bench
+# Ensure src is importable for -m one_shot
 export PYTHONPATH="$REPO_ROOT/src:${PYTHONPATH:-}"
 
 # Run evaluation module
-uv run python -m one_shot_bench.evaluate_run "$RUN_DIR" "$TASK_DIR" | cat
+uv run python -m one_shot.evaluate_run "$RUN_DIR" "$TASK_DIR" | cat
 
 # Print brief summary, including duration if available
 SUMMARY_JSON="$RUN_DIR/evaluation_results.json"

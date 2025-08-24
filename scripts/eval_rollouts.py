@@ -3,8 +3,14 @@
 Eval rollouts orchestrator.
 
 Usage:
-  uv run python scripts/eval_rollouts.py run <config_toml>
+  uv run python scripts/eval_rollouts.py run <config_toml> [options]
   uv run python scripts/eval_rollouts.py summarize <config_name> [--latest]
+
+Options:
+  -v, --verbose    Show progress info (use -vv for full Docker logs)
+  --latest         Use latest rollout for summarize/eval
+
+By default, runs in quiet mode with status polling. Use -vv for full output.
 
 Config TOML schema (example):
 
@@ -35,13 +41,25 @@ RUN_SCRIPT = REPO_ROOT / "scripts" / "run_codex_box.sh"
 EVAL_DOCKER_SCRIPT = REPO_ROOT / "scripts" / "eval_in_docker.sh"
 
 
-def run_cmd(cmd: List[str], env: Dict[str, str] | None = None) -> int:
-    from subprocess import run
+def run_cmd(cmd: List[str], env: Dict[str, str] | None = None, quiet: bool = False, verbose: bool = False) -> int:
+    from subprocess import run, PIPE, STDOUT
     e = os.environ.copy()
     if env:
         e.update(env)
-    r = run(cmd, env=e)
-    return r.returncode
+
+    if quiet and not verbose:
+        # Capture output, don't stream
+        r = run(cmd, env=e, capture_output=True, text=True)
+        if r.returncode != 0 and not verbose:
+            # Only show stderr on failure in quiet mode
+            print(f"[error] Command failed with return code {r.returncode}")
+            if r.stderr:
+                print(f"[error] {r.stderr.strip()}")
+        return r.returncode
+    else:
+        # Stream output normally (verbose mode)
+        r = run(cmd, env=e)
+        return r.returncode
 
 
 def now_ts() -> str:
@@ -82,13 +100,18 @@ def load_config(path: Path) -> Dict[str, Any]:
     return data
 
 
-def run_single_task(task: TaskSpec, rollout_dir: Path, idx: int) -> Dict[str, Any]:
+def run_single_task(task: TaskSpec, rollout_dir: Path, idx: int, quiet: bool = False, verbose: bool = False) -> Dict[str, Any]:
     task_dir = Path(task.prepared_dir)
     slug = task_dir.name
     base = now_ts()
     # Use hyphen for index to keep docker volume mounts valid (avoid ':')
     run_id = f"{base}-{idx}"
     run_dir = REPO_ROOT / "data" / "runs" / run_id
+
+    if not quiet:
+        print(f"[run_codex_box] Task path: {task_dir}")
+        if task.overrides:
+            print(f"[overrides] Using overrides file: {task.overrides}")
 
     # Launch Codex-in-the-Box run, forcing RUN_ID so we can reference run_dir
     env = {
@@ -98,7 +121,7 @@ def run_single_task(task: TaskSpec, rollout_dir: Path, idx: int) -> Dict[str, An
     }
     if task.overrides:
         env["ROLLOUT_OVERRIDES_FILE"] = task.overrides
-    rc = run_cmd(["bash", str(RUN_SCRIPT), str(task_dir)], env=env)
+    rc = run_cmd(["bash", str(RUN_SCRIPT), str(task_dir)], env=env, quiet=quiet, verbose=verbose)
     result: Dict[str, Any] = {
         "task_dir": str(task_dir),
         "run_dir": str(run_dir),
@@ -112,7 +135,7 @@ def run_single_task(task: TaskSpec, rollout_dir: Path, idx: int) -> Dict[str, An
     return result
 
 
-def cmd_run(config_path: Path) -> None:
+def cmd_run(config_path: Path, quiet: bool = False, verbose: bool = False) -> None:
     cfg = load_config(config_path)
     cfg_name = cfg["name"]
     tasks: List[TaskSpec] = cfg["_tasks_parsed"]
@@ -126,17 +149,61 @@ def cmd_run(config_path: Path) -> None:
     print(f"[rollouts] config={config_path} name={cfg_name} tasks={len(tasks)} parallel={parallel}")
     print(f"[rollouts] output={rollout_dir}")
 
+    if quiet and not verbose:
+        print("[rollouts] Running in quiet mode - use -vv for full output")
+
     results: List[Dict[str, Any]] = []
     launch_specs: List[tuple[int, TaskSpec]] = []
     for i, t in enumerate(tasks):
         for r in range(t.rollouts):
             launch_specs.append((len(launch_specs), t))
-    with ThreadPoolExecutor(max_workers=parallel) as ex:
-        fut_to_task = {ex.submit(run_single_task, t, rollout_dir, i): (i, t) for i, t in launch_specs}
-        for fut in as_completed(fut_to_task):
-            res = fut.result()
-            results.append(res)
-            print(f"[rollouts] finished: run_id={res['run_id']} status={res['status']}")
+
+    if quiet and not verbose:
+        # Status polling mode for quiet operation
+        print(f"[rollouts] Starting {len(launch_specs)} tasks with parallel={parallel}")
+
+        completed = 0
+        status_icons = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        icon_idx = 0
+
+        with ThreadPoolExecutor(max_workers=parallel) as ex:
+            fut_to_task = {ex.submit(run_single_task, t, rollout_dir, i, quiet=True, verbose=False): (i, t)
+                          for i, t in launch_specs}
+
+            while fut_to_task:
+                # Show status with spinning icon
+                icon = status_icons[icon_idx % len(status_icons)]
+                print(f"\r{icon} Running tasks... {completed}/{len(launch_specs)} completed", end="", flush=True)
+                icon_idx += 1
+
+                # Check for completed tasks
+                done_futures = [f for f in fut_to_task.keys() if f.done()]
+                for fut in done_futures:
+                    try:
+                        res = fut.result()
+                        results.append(res)
+                        completed += 1
+                        status_icon = "✓" if res['status'] == 'launched' else "✗"
+                        print(f"\r{status_icon} Task {res['run_id']} completed ({res['status']})")
+                    except Exception as e:
+                        print(f"\r✗ Task failed with error: {e}")
+                        completed += 1
+                    del fut_to_task[fut]
+
+                if fut_to_task:  # Only sleep if there are still tasks running
+                    time.sleep(0.5)
+
+            print(f"\r✓ All {len(launch_specs)} tasks completed!")
+
+    else:
+        # Normal verbose mode
+        with ThreadPoolExecutor(max_workers=parallel) as ex:
+            fut_to_task = {ex.submit(run_single_task, t, rollout_dir, i, quiet=quiet, verbose=verbose): (i, t)
+                          for i, t in launch_specs}
+            for fut in as_completed(fut_to_task):
+                res = fut.result()
+                results.append(res)
+                print(f"[rollouts] finished: run_id={res['run_id']} status={res['status']}")
 
     # Save manifest and runs list
     (rollout_dir / "manifest.json").write_text(json.dumps({
@@ -358,24 +425,36 @@ def cmd_eval(args: List[str]) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) < 3:
-        print(__doc__)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Eval rollouts orchestrator")
+    parser.add_argument("command", choices=["run", "summarize", "eval"],
+                       help="Command to run")
+    parser.add_argument("config_path_or_name", help="Path to config file or config name")
+    parser.add_argument("-v", "--verbose", action="count", default=0,
+                       help="Increase verbosity (use -vv for full output)")
+    parser.add_argument("--latest", action="store_true",
+                       help="Use latest rollout for summarize/eval commands")
+
+    args = parser.parse_args()
+
+    # Determine verbosity levels
+    quiet = args.verbose == 0  # Default: quiet mode
+    verbose = args.verbose >= 2  # -vv: full verbose mode
+
+    if args.command == "run":
+        cfg_path = Path(args.config_path_or_name)
+        if not cfg_path.exists():
+            print(f"Error: Config file {cfg_path} does not exist")
+            sys.exit(1)
+        cmd_run(cfg_path, quiet=quiet, verbose=verbose)
+    elif args.command == "summarize":
+        cmd_summarize(args.config_path_or_name, args.latest)
+    elif args.command == "eval":
+        cmd_eval([args.config_path_or_name])
+    else:
+        parser.print_help()
         sys.exit(1)
-    cmd = sys.argv[1]
-    if cmd == "run":
-        cfg_path = Path(sys.argv[2])
-        cmd_run(cfg_path)
-        return
-    if cmd == "summarize":
-        cfg_name = sys.argv[2]
-        latest = "--latest" in sys.argv[3:]
-        cmd_summarize(cfg_name, latest)
-        return
-    if cmd == "eval":
-        cmd_eval(sys.argv[2:])
-        return
-    print(__doc__)
-    sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ _SRC_DIR = _REPO_ROOT / 'src'
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from one_shot_bench.task_creation import OneShotTaskManager, WorktreeReadiness
+from one_shot.task_creation import OneShotTaskManager, WorktreeReadiness
 
 logging.basicConfig(
     level=logging.INFO,

@@ -2,127 +2,162 @@
 
 Scalably converting pair-programming CLI trajectories into challenging digital agent tasks.
 
-Key idea:
-- You pair progress with Codex in the terminal until you're happy with the result.
-- Codex uses mcp tools to save the diff, initial validation criteria like a rubric and fail->pass unit tests, and a record of its successful trajectory to local storage.
-- You can then (upon optional tweaking of the rubric/unit tests) load that scenario into modal or docker and evaluate another instance of codex using a different model to see if it can headlessly "one-shot" the problem.
-- Such data can be shared to and fetched from huggingface. See  https://huggingface.co/datasets/JoshPurtell/one-shot-bench
+## Overview
 
-Motivations:
-- SWEBench is over a year old, and we're doing work with agents. This is a simple-ish (please contribute!) approach to create and curate an evaluation dataset that actually matters for you.
-- CLI agents are really powerful and have lots of applications. OSS scaffolding for facilitating the creation of high-quality data using skilled practitioners that already love using them means more data in the ecosystem.
-- Selfishly, I hate evaluating agents on SWEBench and other legacy SWE agent benchmarks. I'm hoping to curate a super high-quality long-horizon agent dataset to really put Synth's algos to the test!!
+OneShot Bench is a comprehensive evaluation framework for AI coding agents. It captures successful human-AI pair programming sessions and converts them into standardized evaluation tasks that can be run across different models and environments.
 
-```
-+hello world
-[results] ----------------------------------------
-[results] Rubric total score: 54%
-[results]  - task_completion: 0% (weight=0.4)
-[results]  - code_quality: 80% (weight=0.3)
-[results]  - testing: 100% (weight=0.3)
-[results] Unit tests: 1 passed, 1 failed
-[results] ========================================
-[cleanup] Removing container
-```
+### Key Features
 
+- **Task Capture**: Record successful coding sessions with Codex MCP tools
+- **Reproducible Evaluation**: Run tasks in Docker or Modal sandboxes
+- **Multi-Model Support**: Compare different AI models on the same tasks
+- **Dataset Management**: Share and reuse tasks via Hugging Face
+- **Advanced Overrides**: Customize evaluation environments
+- **Benchmarking**: Run large-scale parallel evaluations
 
-# Spec Bench
+## Quick Start
 
-Motivation: AI coding best practices are voodoo. Agent evals are outdated and irrelevant.
+### 1. Installation
 
-Does Agents.md help? How do you structure your spec?
-
-STEPS
-
-Capture meaningful evals by recording successful sessions
-Create rich rubrics and tests in the terminal with Claude
-Configure scaled experiments quickly
-
-
-BENCH EVAL
-uv run python /Users/joshuapurtell/Documents/GitHub/one-shot-bench/scripts/eval_rollouts.py run /Users/joshuapurtell/Documents/GitHub/one-shot-bench/configs/env_bench.toml
-
-uv run python /Users/joshuapurtell/Documents/GitHub/one-shot-bench/scripts/eval_rollouts.py eval hello_world --latest 
-
-
-
-
-### Quick start
-
-1) Install codex-synth wrapper
 ```bash
+# Install codex-synth wrapper
 bash scripts/install_codex_synth.sh
+
+# Install Python dependencies
+uv sync
 ```
 
-2) Optional: start local tracing workers and trust CA
-```bash
-uv tool install mitmproxy
-bash scripts/start_synth_workers.sh
-```
+### 2. Create and Run Your First Task
 
-2a) One-time: enable MCP tools for task creation
 ```bash
-bash scripts/create_tasks/setup_codex_mcp.sh
-```
-Inside Codex, ask: "What tools do you have?" — you should see `repo.start_task.v1`, `repo.end_task.v1`, `repo.check_readiness.v1`, `repo.autofix_readiness.v1`.
-
-2.5) Optional: create a task locally - NOTE, there's a known bug where the MCP tools say failure after successful execution. Ignore it or push a fix :-)
-```bash
+# Start Codex with MCP tools enabled
 codex-synth
-<Hi codex, please update the readme with "hello world". Use the start task tool to begin and end task tool to finish>
+
+# In Codex, create a task:
+# "Add a hello world section to the README. Use start_task tool to begin and end_task tool to finish."
+
+# Run the created task
+bash scripts/run_codex_box.sh data/tasks/created/your-task-slug
 ```
 
-3) Hello world: run a prepared task locally (Docker)
+### 3. View Results
+
+Results are saved in `data/runs/<run_id>/` with:
+- Evaluation scores and rubric details
+- Generated code diffs and artifacts
+- Detailed logs and debugging information
+
+## Documentation
+
+The guides are organized into four main sections:
+
+### 📚 **Hello World** - Basic Task Workflow
+[View Guide](guides/hello_world/README.md)
+
+Get started with the basic workflow:
+- Installing and setting up Codex
+- Creating your first task interactively
+- Running tasks in Docker and Modal
+- Understanding evaluation results
+
+### 🤗 **Hugging Face** - Dataset Management
+[View Guide](guides/huggingface/README.md)
+
+Share and reuse evaluation tasks:
+- Export prepared tasks to JSONL format
+- Upload datasets to Hugging Face
+- Download and run tasks from HF datasets
+- Parallel evaluation with Modal
+
+### ⚙️ **Overrides** - Environment Customization
+[View Guide](guides/overrides/README.md)
+
+Control the evaluation sandbox:
+- Remove/add files to the environment
+- Customize repository settings
+- Inject custom files and configurations
+- Set environment variables and LM instructions
+
+### 📊 **Benchmarking** - Large-Scale Evaluation
+[View Guide](guides/benchmarking/README.md)
+
+Run comprehensive benchmarks:
+- Configure multiple tasks in parallel
+- Multiple rollouts per task for statistics
+- Compare different models and settings
+- Analyze and aggregate results
+
+## Architecture
+
+```
+OneShot Bench Components:
+├── Task Creation (MCP Tools)
+├── Task Preparation (Docker Images)
+├── Evaluation Runners (Docker/Modal)
+├── Result Analysis (Rubrics & Metrics)
+├── Dataset Management (Hugging Face)
+└── Benchmark Orchestration (Parallel Execution)
+```
+
+## Example Commands
+
 ```bash
-scripts/run_codex_box.sh data/tasks/prepared/add-lm-tracing-readme 900 50000
+# Create a task interactively
+codex-synth
+
+# Prepare a created task
+uv run one_shot.prepare_task_for_eval --task-dir data/tasks/created/task-slug
+
+# Run evaluation
+scripts/run_codex_box.sh data/tasks/prepared/task-slug
+
+# Run with overrides
+uv run one_shot run-with-overrides data/tasks/prepared/task-slug overrides.json
+
+# Run benchmark
+python scripts/eval_rollouts.py run configs/your_benchmark.toml
+
+# Export to Hugging Face
+uv run one_shot.hf.export --out dataset.jsonl --split train
 ```
-or run a newly created raw task (will automatically be prepared)
-```bash
-bash scripts/run_codex_box.sh data/tasks/created/update-readme-with-hello-world_20250812_181007 
-```
 
-Artifacts and results will appear under `data/runs/<run_id>/`.
+## Common Workflows
 
-### Get started guides
+### Individual Task Evaluation
+1. Create task with Codex MCP tools
+2. Prepare task for evaluation
+3. Run in Docker or Modal
+4. Review results and scores
 
-- Setup (install, workers, MCP): `guides/setup.md`
-- Creating a task (Codex MCP, one-shot): `guides/creating-a-task.md`
-- Running tasks sequentially with Docker: `guides/docker-sequential.md`
-- Running tasks in parallel with Modal: `guides/modal-parallel.md`
-- Running on Modal (setup + single-run): `guides/modal.md`
-- Using Hugging Face datasets: `guides/huggingface.md`
+### Dataset Creation
+1. Create multiple tasks
+2. Export to JSONL format
+3. Upload to Hugging Face
+4. Share with community
 
-### Hugging Face integration
+### Model Comparison
+1. Set up benchmark configuration
+2. Run across multiple models
+3. Compare results and metrics
+4. Identify best performing models
 
-- Upload a prepared task (slim, excludes heavy files):
-  - Guide: `guides/huggingface_upload.md`
-  - Command:
-    ```bash
-    uv run python scripts/upload_prepared_task_hf.py \
-      data/tasks/prepared/<slug> \
-      JoshPurtell/one-shot-bench \
-      tasks/<slug> \
-      --yes
-    ```
+## Contributing
 
-- Run a prepared task fetched from Hugging Face (Docker):
-  - Guide: `guides/huggingface_run.md`
-  - Command:
-    ```bash
-    uv run python scripts/run_hf_task_docker.py \
-      --repo-id JoshPurtell/one-shot-bench \
-      --task-slug <slug> \
-      --model gpt-5-mini
-    ```
+- **Bug Reports**: Open issues on GitHub
+- **Feature Requests**: Use GitHub discussions
+- **Code Contributions**: Submit pull requests
+- **Dataset Contributions**: Upload tasks to Hugging Face
 
-### Modal (optional)
+## Resources
 
-- To run Codex in Modal instead of Docker:
-  ```bash
-  export OPENAI_API_KEY=sk-...
-  export OPENAI_MODEL=gpt-5-mini
-  uv tool install modal && modal setup
-  SANDBOX_BACKEND=modal bash scripts/run_codex_box.sh data/tasks/prepared/<slug>
-  ```
+- **Hugging Face Dataset**: [JoshPurtell/one-shot-bench](https://huggingface.co/datasets/JoshPurtell/one-shot-bench)
+- **Documentation**: [OneShot Bench Guides](./guides/)
+- **Source Code**: [GitHub Repository](https://github.com/your-org/one-shot-bench)
 
-hello world
+---
+
+**Quick Links:**
+- [Hello World Guide](guides/hello_world/README.md) - Get started now!
+- [Hugging Face Guide](guides/huggingface/README.md) - Share your tasks
+- [Overrides Guide](guides/overrides/README.md) - Customize environments
+- [Benchmarking Guide](guides/benchmarking/README.md) - Scale up evaluation

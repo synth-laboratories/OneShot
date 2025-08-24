@@ -4,7 +4,7 @@ OneShot CLI
 
 Usage:
   uvx one-shot serve
-  uv run python -m one_shot_bench.cli serve
+  uv run python -m one_shot.cli serve
 
 Runs mitmproxy with the local tracing addon to capture OpenAI API traffic.
 """

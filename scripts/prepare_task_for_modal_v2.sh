@@ -66,7 +66,7 @@ if [ -n "$CODEX_PATH" ]; then
         echo "  modal run codex_modal_runner.py --task-dir $TASK_DIR"
         echo ""
         echo "Or using the unified runner:"
-        echo "  SANDBOX_BACKEND=modal ./one_shot_bench/run_sandbox.sh $TASK_DIR"
+        echo "  SANDBOX_BACKEND=modal ./one_shot/run_sandbox.sh $TASK_DIR"
     else
         echo "ERROR: Could not find codex package directory!"
         echo "Checked: $CODEX_PACKAGE_PATH"

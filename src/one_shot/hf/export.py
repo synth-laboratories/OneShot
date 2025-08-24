@@ -54,7 +54,7 @@ def build_record(prepared_dir: Path, diff_cap: int = 256_000, notes_cap: int = 2
         "repo": repo_obj,
         "evaluation": {"rubrics": rubrics, "test_scripts": test_scripts},
         "artifacts": {"diff_patch": diff_patch, "notes": notes, "repo_info": repo_info_text, "paths": paths},
-        "meta": {"prepared_version": "one_shot_bench", "created_from": str(prepared_dir)},
+        "meta": {"prepared_version": "one_shot", "created_from": str(prepared_dir)},
     }
     return record
 

@@ -18,7 +18,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "src/one_shot_bench",
+  "src/one_shot",
   "src/local_tracing",
   "src/synth_bench",
 ]
@@ -31,4 +31,4 @@ include = [
 ]
 
 [project.scripts]
-one-shot = "one_shot_bench.cli:main"
+one-shot = "one_shot.cli:main"

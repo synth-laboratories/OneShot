@@ -11,7 +11,7 @@ _SRC_DIR = _REPO_ROOT / 'src'
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from one_shot_bench.hf.upload import upload_dataset as upload_dataset_mod
+from one_shot.hf.upload import upload_dataset as upload_dataset_mod
 
 
 DEFAULT_DATA = Path("data/datasets/codex_coach_tasks/train.jsonl")
@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
 #!/usr/bin/env python3
 """
-Deprecated inline implementation kept for reference; logic moved to one_shot_bench.hf.upload.
+Deprecated inline implementation kept for reference; logic moved to one_shot.hf.upload.
 """
 
 import json

@@ -211,7 +211,7 @@ docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 # Now run host-side evaluation to generate report and LLM rubric score
 export PYTHONPATH="$REPO_ROOT/src:${PYTHONPATH:-}"
-uv run python -m one_shot_bench.evaluate_run "$RUN_DIR" "$TASK_DIR" | cat
+uv run python -m one_shot.evaluate_run "$RUN_DIR" "$TASK_DIR" | cat
 
 exit 0
 

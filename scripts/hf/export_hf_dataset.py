@@ -11,7 +11,7 @@ _SRC_DIR = _REPO_ROOT / 'src'
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from one_shot_bench.hf.export import export_dataset, DEFAULT_OUT
+from one_shot.hf.export import export_dataset, DEFAULT_OUT
 
 
 def main() -> int:
@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
 #!/usr/bin/env python3
 """
-Deprecated inline implementation retained below for reference; logic moved to one_shot_bench.hf.export.
+Deprecated inline implementation retained below for reference; logic moved to one_shot.hf.export.
 """
 
 import json
