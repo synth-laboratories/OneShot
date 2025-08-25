@@ -27,7 +27,20 @@ bash scripts/install_codex_synth.sh
 uv sync
 ```
 
-### 2. Create and Run Your First Task
+### 2. Start MITM workers
+
+```bash
+# install the proxy
+uv tool install mitmproxy
+
+# start the proxy
+bash scripts/start_synth_workers.sh
+
+# stop the proxy when finished using OneShot
+# bash scripts/trace_session_monitor.sh cleanup
+```
+
+### 3. Create and Run Your First Task
 
 ```bash
 # Start Codex with MCP tools enabled
@@ -40,7 +53,7 @@ codex-synth
 bash scripts/run_codex_box.sh data/tasks/created/your-task-slug
 ```
 
-### 3. View Results
+### 4. View Results
 
 Results are saved in `data/runs/<run_id>/` with:
 - Evaluation scores and rubric details
