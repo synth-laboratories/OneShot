@@ -2122,22 +2122,26 @@ name = "oneshot-synth"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "hf" },
     { name = "huggingface-hub" },
     { name = "mitmproxy", version = "11.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "mitmproxy", version = "12.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "modal" },
     { name = "openai" },
+    { name = "requests" },
     { name = "synth-ai" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.1.8" },
     { name = "hf", specifier = ">=0.0.8" },
     { name = "huggingface-hub", specifier = ">=0.34.4" },
     { name = "mitmproxy", specifier = ">=10.3.0" },
     { name = "modal", specifier = ">=1.1.1" },
     { name = "openai", specifier = ">=1.101.0" },
+    { name = "requests", specifier = ">=2.32.4" },
     { name = "synth-ai", specifier = ">=0.2.19" },
 ]
 
