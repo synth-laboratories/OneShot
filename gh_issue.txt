@@ -1,0 +1,60 @@
+# Support synthesizing evaluation tasks from issue trackers and pair-programming sessions
+
+## Current state
+- `src/one_shot/task_creation/task_manager.py` only handles manual start/end flows that assume a human (or Codex) is actively modifying the repo before the task is materialized. There is no abstraction for ingesting external problem statements.
+- `scripts/create_tasks/` wraps codex-synth with MCP tools to capture pair-programming sessions, but the resulting `data/tasks/created/*` artifacts are only produced when the start/end tools are invoked inside the live coding session.
+- We already capture raw and cleaned traces via `src/local_tracing/mitm_tracer.py` and `src/local_tracing/trace_cleaner.py`, yet there is no follow-up pipeline that turns those traces into reusable tasks.
+- No code in the repository fetches data from Linear or GitHub. Environment variable docs likewise omit API credentials for these sources.
+
+## Goals
+- Ingest a Linear ticket (e.g., `ENG-1234`) and synthesize a OneShot task scaffold that encodes the ticket context, links to the right repo slice, and seeds LM instructions/tests aligned with the ticket acceptance criteria.
+- Ingest a closed GitHub issue and synthesize a test problem that mirrors the fixed bug or feature, ideally using the closing PR/commit to extract an authoritative diff and regression test baseline.
+- Formalize the pair-programming capture path so we can promote a recorded session (`session_clean.json`) into a reproducible evaluation task without requiring the human to run `end_task` manually.
+
+## High-level approach
+1. Introduce a `TaskSource` abstraction under `src/one_shot/task_creation/` that normalizes the metadata we need regardless of origin (fields like `title`, `summary`, `repo_url`, `commit_range`, `acceptance`, `artifacts`, `traces_path`).
+2. Build dedicated ingesters that map Linear tickets, GitHub issues, or existing trace sessions into a `TaskSource`.
+3. Extend the task creation pipeline so `TaskManager` (or a sibling builder) can accept a `TaskSource` and produce the existing artifact bundle (`tb_meta.json`, `LM_INSTRUCTIONS.md`, `diff.patch`, evaluation scaffolding).
+4. Provide CLI/MCP/HTTP entry points plus docs/tests so the new flows are scriptable and easy to adopt.
+
+## Proposed implementation plan
+
+### 1. Linear ticket ingestion
+- Add `src/one_shot/task_creation/linear.py` with a small client that hits Linear's GraphQL API (PAT via `LINEAR_API_KEY` env). Fetch title, description, acceptance criteria, linked PRs/branches if present, and attachments.
+- Map the GraphQL payload into a `TaskSource` instance. Normalize repo data by parsing custom fields or branch URLs; fall back to prompts if unresolved.
+- Add `uv run one_shot.ingest.linear --ticket ENG-1234` and an HTTP/MCP tool that wraps the ingester and pipes the result into the builder. Allow dry-run output to JSON for inspection.
+- Unit-test the GraphQL integration with recorded responses (store fixtures under `tests/fixtures/linear/`). Mock network calls so CI does not hit Linear.
+- Update `ENV_VARIABLES.md` and relevant guides with Linear setup instructions.
+
+### 2. Closed GitHub issue ingestion
+- Add `src/one_shot/task_creation/github.py` with methods to call the GitHub REST API (token via `GITHUB_TOKEN`). Pull issue details, closing state, linked PR, and the merged commit SHA.
+- If a PR is available, fetch the patch/diff and touched files; use this to fill `diff.patch`, `repo_info.json`, and test placeholders. When no PR exists, surface a warning and create a TODO in the issue output.
+- Surface CLI entry point `uv run one_shot.ingest.github --repo owner/name --issue 123`. Provide optional flags to pin to an alternate fork or add sparse checkout paths.
+- Write API fixture tests and error-handling coverage (rate limiting, missing permissions, private repos).
+- Document authentication requirements and usage examples in `docs/creating-datapoints-with-synth-ai.md` or a new guide section.
+
+### 3. Pair-programming trace promotion
+- Extend `TraceExporter` (or add `trace_promoter.py`) to locate a `session_clean.json`, derive the time window, and replay the repo state between `start_task` and the final diff even if `end_task` was not invoked.
+- Add tooling (`uv run one_shot.ingest.trace --session <id>`) that reuses the Git helpers to compute the commit range, capture touched files, and dump artifacts into `data/tasks/created/<slug>/`.
+- Optionally enrich `LM_INSTRUCTIONS.md` with a summary synthesized from the conversation trace (prompting an LLM using the recorded messages) so the task is self-contained.
+- Provide an MCP/HTTP tool so Codex (or other IDE agents) can retroactively promote the last session.
+- Write integration tests that feed a sample trace fixture and assert the scaffolding matches expectations.
+
+## Cross-cutting tasks
+- Refactor `OneShotTaskManager` so artifact writing lives in a helper that can accept either live Git state or precomputed source metadata (keeps manual start/end behavior intact).
+- Add schema docs/specs under `specs/` describing the `TaskSource` shape and expected outputs for each ingestion path.
+- Extend `scripts/create_tasks/README.md` with new workflows and troubleshooting steps for Linear/GitHub integrations.
+- Ensure telemetry/logging stays helpful (e.g., log missing fields but continue when possible).
+
+## Validation plan
+- Unit tests for each ingester using mocked API responses.
+- Golden-file tests for the artifact writer to ensure we emit consistent `tb_meta.json` and instructions across sources.
+- Manual smoke tests documented in the README (sample Linear ticket, sample GitHub issue, sample trace promotion).
+- Optionally, add an e2e test in `scripts/create_tasks/test_oneshot.py` that runs the builder against a fixture repo.
+
+## Open questions / risks
+- How do we map Linear tickets to the canonical repo/commit when the tracker does not store that metadata? We may need conventions (custom fields) or heuristics that rely on branch naming.
+- GitHub issues closed without a PR may require additional heuristics (search commits by closing keywords) or fallback prompts for humans to fill data.
+- Pair-programming traces may not include the final git diff if the user never committed; we might need to snapshot the worktree at the session end time.
+- Access tokens for Linear/GitHub must be handled securely; consider supporting `.env` files and per-user config instead of storing tokens in task artifacts.
+

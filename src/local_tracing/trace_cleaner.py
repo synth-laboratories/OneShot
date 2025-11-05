@@ -127,7 +127,6 @@ def main() -> int:
 
     # Handle container shutdown signals gracefully
     import signal
-    import os
 
     def signal_handler(signum, frame):
         print(f"[cleaner] Received signal {signum}, shutting down gracefully...")

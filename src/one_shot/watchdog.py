@@ -114,7 +114,7 @@ class ContainerWatchdog:
                     if data.get("completed"):
                         self.log("Completion sentinel detected in container")
                         return True
-        except Exception as e:
+        except Exception:
             # Container might be dead
             pass
         return False
@@ -292,7 +292,7 @@ class ContainerWatchdog:
                 try:
                     subprocess.run(["docker", "stop", "-t", "10", self.container_name], 
                                  capture_output=True, timeout=15)
-                except:
+                except Exception:
                     pass
                 return 0
             elif status == "failed":
@@ -301,7 +301,7 @@ class ContainerWatchdog:
                 try:
                     subprocess.run(["docker", "stop", "-t", "10", self.container_name], 
                                  capture_output=True, timeout=15)
-                except:
+                except Exception:
                     pass
                 return 1
             elif status == "token_limit":
@@ -310,7 +310,7 @@ class ContainerWatchdog:
                 try:
                     subprocess.run(["docker", "stop", "-t", "10", self.container_name], 
                                  capture_output=True, timeout=15)
-                except:
+                except Exception:
                     pass
                 return 3
             

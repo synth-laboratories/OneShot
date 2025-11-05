@@ -5,7 +5,6 @@ Collects results in a table format for analysis.
 """
 
 import argparse
-import asyncio
 import json
 import subprocess
 import time
@@ -13,7 +12,7 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 import sys
 
 
@@ -66,7 +65,8 @@ def run_single_task(task_name: str, task_path: str, config: Dict) -> Dict:
             cmd,
             capture_output=True,
             text=True,
-            timeout=config['agents']['timeout_sec'] + 60  # Add buffer for Modal overhead
+            timeout=config['agents']['timeout_sec'] + 60,  # Add buffer for Modal overhead
+            env=env,
         )
         
         # Parse output to extract scores
@@ -81,7 +81,7 @@ def run_single_task(task_name: str, task_path: str, config: Dict) -> Dict:
                 if "Total Score:" in line:
                     try:
                         score = float(line.split(':')[1].strip().rstrip('%')) / 100
-                    except:
+                    except (IndexError, ValueError):
                         pass
                 elif "• " in line and "%" in line and "weight:" in line:
                     # Parse rubric scores
@@ -90,7 +90,7 @@ def run_single_task(task_name: str, task_path: str, config: Dict) -> Dict:
                         rubric_name = parts[0].strip()
                         score_part = parts[1].split('(')[0].strip().rstrip('%')
                         rubric_scores[rubric_name] = float(score_part) / 100
-                    except:
+                    except (IndexError, ValueError):
                         pass
                 elif "✅" in line or "❌" in line:
                     # Parse test results
@@ -99,7 +99,7 @@ def run_single_task(task_name: str, task_path: str, config: Dict) -> Dict:
                             test_name = line.split("tests/")[1].split(":")[0].strip()
                             passed = "✅" in line
                             test_results[test_name] = passed
-                    except:
+                    except (IndexError, ValueError):
                         pass
         
         duration = time.time() - start_time

@@ -97,7 +97,7 @@ class LMRubricScorerStructured:
         }
         
         # Make the API call with structured output
-        print(f"\n🤖 LM EVALUATION STARTING")
+        print("\n🤖 LM EVALUATION STARTING")
         print(f"Model: {self.model}")
         print(f"Temperature: {self.temperature}")
         print(f"Evaluating {len(rubrics)} rubrics...")
@@ -162,7 +162,7 @@ class LMRubricScorerStructured:
             # Calculate final weighted score
             weighted_score = total_weighted_score / total_weight if total_weight > 0 else 0.0
             
-            print(f"\n📊 LM EVALUATION RESULTS:")
+            print("\n📊 LM EVALUATION RESULTS:")
             print(f"{'='*60}")
             print(f"| {'Rubric':<15} | {'Score':<8} | {'LM Judge':<20} |")
             print(f"{'='*60}")

@@ -1,0 +1,29 @@
+====================================================================
+OneShot Bench - Groq Quick Start
+====================================================================
+
+Step 1: Set your Groq API key
+--------------------------------------------------------------------
+export GROQ_API_KEY="your-groq-api-key-here"
+
+Step 2: Run the example
+--------------------------------------------------------------------
+./run_example_with_groq.sh
+
+Step 3: View results
+--------------------------------------------------------------------
+ls -lt data/runs/ | head -5
+cd data/runs/<latest-run-id>/
+cat scoring_results.md
+
+That's it! ✓
+
+For more details, see EXAMPLE_GROQ.md
+
+====================================================================
+Configuration Used:
+- Model: openai/gpt-oss-120b (Groq)
+- Base URL: https://api.groq.com/openai/v1
+- Task: Simple Hello World example
+====================================================================
+

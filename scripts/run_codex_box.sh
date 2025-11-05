@@ -262,14 +262,32 @@ if [[ -d "$TASK_PATH_INPUT" ]]; then
 			echo "[auth] Removed existing .env from build context (auth mode)"
 		fi
 		touch "$TASK_PATH_INPUT/.env"
-		echo "[auth] Created empty .env for Docker COPY"
+		if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
+			printf 'PRIVATE_GITHUB_PAT=%s\n' "$PRIVATE_GITHUB_PAT" > "$TASK_PATH_INPUT/.env"
+			echo "[auth] Created .env with PRIVATE_GITHUB_PAT for Docker COPY"
+		else
+			: > "$TASK_PATH_INPUT/.env"
+			echo "[auth] Created empty .env for Docker COPY"
+		fi
 	else
-        # API mode: ensure .env exists with OPENAI_API_KEY
-        if [[ ! -f "$TASK_PATH_INPUT/.env" ]]; then
-            echo "OPENAI_API_KEY=${OPENAI_API_KEY}" > "$TASK_PATH_INPUT/.env"
-            echo "Wrote .env with OPENAI_API_KEY for build"
-        fi
-    fi
+		# API mode: ensure .env exists with OPENAI_API_KEY
+		if [[ ! -f "$TASK_PATH_INPUT/.env" ]]; then
+			{
+				echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
+				if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
+					echo "PRIVATE_GITHUB_PAT=${PRIVATE_GITHUB_PAT}"
+				fi
+			} > "$TASK_PATH_INPUT/.env"
+			echo "Wrote .env with OPENAI_API_KEY for build"
+		else
+			if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
+				if ! grep -q '^PRIVATE_GITHUB_PAT=' "$TASK_PATH_INPUT/.env" 2>/dev/null; then
+					printf '\nPRIVATE_GITHUB_PAT=%s\n' "$PRIVATE_GITHUB_PAT" >> "$TASK_PATH_INPUT/.env"
+					echo "[auth] Appended PRIVATE_GITHUB_PAT to existing .env"
+				fi
+			fi
+		fi
+	fi
 
 	# Copy mitmproxy CA cert into build context if available
 	if [[ -f "$HOME/.mitmproxy/mitmproxy-ca-cert.pem" && ! -f "$TASK_PATH_INPUT/mitmproxy-ca-cert.pem" ]]; then
@@ -306,20 +324,26 @@ if [[ -f "$TASK_PATH_INPUT/tb_meta.json" ]]; then
 		echo "Error: tb_meta.repo.git_url is missing" >&2
 		exit 1
 	fi
-	if [[ "$GIT_URL" != https://github.com/* ]]; then
-		echo "Error: git_url must be a public HTTPS GitHub URL. Got: $GIT_URL" >&2
+	if [[ "$GIT_URL" != https://* ]]; then
+		echo "Error: git_url must be an HTTPS Git URL. Got: $GIT_URL" >&2
 		exit 1
 	fi
 
+	AUTH_GIT_URL="$GIT_URL"
+	if [[ -n "${PRIVATE_GITHUB_PAT:-}" && "$GIT_URL" == https://* ]]; then
+		AUTH_GIT_URL="https://x-access-token:${PRIVATE_GITHUB_PAT}@${GIT_URL#https://}"
+		echo "[preflight] Using GitHub token for remote access"
+	fi
+
 	# Check remote reachable
-	if ! git ls-remote "$GIT_URL" >/dev/null 2>&1; then
+	if ! git ls-remote "$AUTH_GIT_URL" >/dev/null 2>&1; then
 		echo "Error: Cannot reach remote repository: $GIT_URL" >&2
 		exit 1
 	fi
 	echo "[preflight] Remote is reachable"
 
 	# Check branch exists
-	if ! git ls-remote --heads "$GIT_URL" "$BRANCH" | grep -q .; then
+	if ! git ls-remote --heads "$AUTH_GIT_URL" "$BRANCH" | grep -q .; then
 		echo "Error: Branch '$BRANCH' not found on remote $GIT_URL" >&2
 		exit 1
 	fi
@@ -327,7 +351,7 @@ if [[ -f "$TASK_PATH_INPUT/tb_meta.json" ]]; then
 
 	# Check commit exists on remote if provided and not HEAD
 	if [[ -n "$COMMIT" && "$COMMIT" != "HEAD" ]]; then
-		REMOTE_REFS="$(git ls-remote "$GIT_URL")"
+		REMOTE_REFS="$(git ls-remote "$AUTH_GIT_URL")"
 		if ! printf '%s\n' "$REMOTE_REFS" | awk '{print $1}' | grep -q "^$COMMIT$"; then
 			echo "Error: Commit '$COMMIT' not found on remote $GIT_URL." >&2
 			echo "Hint: push the commit to remote, or update tb_meta.repo.start_commit_sha to a remote SHA (e.g., the current tip of '$BRANCH')." >&2
@@ -336,6 +360,7 @@ if [[ -f "$TASK_PATH_INPUT/tb_meta.json" ]]; then
 		echo "[preflight] Commit exists on remote"
 	fi
 	echo "[preflight] All checks passed"
+	unset AUTH_GIT_URL
 fi
 
 mkdir -p "$RUN_DIR"
@@ -369,14 +394,18 @@ if [[ -x "${REPO_ROOT}/scripts/run_sandbox.sh" ]]; then
     "${REPO_ROOT}/scripts/run_sandbox.sh" "$TASK_PATH_INPUT" "$RUN_DIR" "$TRACE_DIR" "${@:2}"
 else
     echo "[build] Building Docker image..."
-    docker build --no-cache -t oneshot-task "$TASK_PATH_INPUT"
+    BUILD_ARGS=(--no-cache -t oneshot-task)
+    if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
+        BUILD_ARGS+=(--build-arg "GITHUB_PAT=${PRIVATE_GITHUB_PAT}")
+    fi
+    docker build "${BUILD_ARGS[@]}" "$TASK_PATH_INPUT"
 
     echo "[run] Auth mode (billing) = $BILLING_MODE"
 
     DOCKER_RUN_OPTS=(--rm -v "$RUN_DIR:/runs")
 
-    # Allocate TTY and relax security similar to working synth-research setup
-    DOCKER_RUN_OPTS+=( -it --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN --cap-add SYS_PTRACE )
+    # Relax security similar to working synth-research setup (removed -it for non-interactive shells)
+    DOCKER_RUN_OPTS+=( --security-opt seccomp=unconfined --security-opt apparmor=unconfined --cap-add SYS_ADMIN --cap-add SYS_PTRACE )
 
     # Mount codex auth dir if using auth mode
     if [[ "$BILLING_MODE" == "auth" ]]; then
@@ -394,14 +423,30 @@ else
     DOCKER_RUN_OPTS+=( -e "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}" )
     # Also pass CODEX_MODEL to align with Codex CLI expectations
     DOCKER_RUN_OPTS+=( -e "CODEX_MODEL=${OPENAI_MODEL:-gpt-5-mini}" )
+    if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
+        DOCKER_RUN_OPTS+=( -e "PRIVATE_GITHUB_PAT=${PRIVATE_GITHUB_PAT}" )
+        echo "[run] Passing PRIVATE_GITHUB_PAT to container environment"
+    fi
 
     # Provide a per-run Codex config via bind mount so we don't rely on image-baked config
     MODEL_ENV="${OPENAI_MODEL:-gpt-5-mini}"
     CODEX_HOME_DIR="$RUN_DIR/codex_home/.codex"
     mkdir -p "$CODEX_HOME_DIR"
+    mkdir -p "$CODEX_HOME_DIR/sessions"
     printf 'model_provider = "openai"\nmodel = "%s"\n' "$MODEL_ENV" > "$CODEX_HOME_DIR/config.toml"
+    # In API mode, also create auth.json with the API key for Codex
+    if [[ "$BILLING_MODE" == "api" && -n "${OPENAI_API_KEY:-}" ]]; then
+        cat > "$CODEX_HOME_DIR/auth.json" <<EOF
+{
+  "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+  "tokens": null,
+  "last_refresh": null
+}
+EOF
+        echo "[run] Created auth.json with API key for Codex"
+    fi
     cp -f "$CODEX_HOME_DIR/config.toml" "$RUN_DIR/artifacts/codex-config.host.toml" 2>/dev/null || true
-    DOCKER_RUN_OPTS+=( -v "$CODEX_HOME_DIR:/root/.codex:ro" )
+    DOCKER_RUN_OPTS+=( -v "$CODEX_HOME_DIR:/root/.codex" )
     echo "[run] Mounting Codex config with model: $MODEL_ENV"
 
     echo "[run] Starting container (attached with TTY)…"
@@ -456,4 +501,3 @@ echo "Run artifacts in: $RUN_DIR"
 
 # Explicitly exit to ensure script terminates
 exit 0
-

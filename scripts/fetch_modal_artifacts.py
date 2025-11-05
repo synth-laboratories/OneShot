@@ -6,7 +6,6 @@ This replicates the Docker artifact structure locally.
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -115,7 +114,7 @@ def main():
     )
     
     # List command
-    list_parser = subparsers.add_parser("list", help="List available runs")
+    subparsers.add_parser("list", help="List available runs")
     
     args = parser.parse_args()
     

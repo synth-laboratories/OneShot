@@ -8,7 +8,6 @@ import sys
 import json
 import subprocess
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -31,7 +30,7 @@ def pretty_json(data):
         if isinstance(data, str):
             data = json.loads(data)
         return json.dumps(data, indent=2)
-    except:
+    except Exception:
         return str(data)
 
 def main():

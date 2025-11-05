@@ -171,7 +171,6 @@ def example_docker_overrides():
 
 def example_working_with_overrides_manager():
     """Example 9: Direct usage of OverridesManager."""
-    from spec_bench.overrides import OverridesManager
 
     # Load and manipulate overrides directly
     manager = OverridesManager(Path("overrides.json"))

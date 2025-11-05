@@ -1,0 +1,433 @@
+diff --git a/synth_ai/cli/__init__.py b/synth_ai/cli/__init__.py
+index 62630e5..25810ab 100755
+--- a/synth_ai/cli/__init__.py
++++ b/synth_ai/cli/__init__.py
+@@ -60,6 +60,17 @@ try:
+ except Exception:
+     pass
+ 
++# Register lightweight editor launch helpers if available
++for _editor in ("opencode", "codex", "claude"):
++    try:
++        module = importlib.import_module(f"synth_ai.cli.{_editor}")
++    except Exception:
++        # Defer failures to runtime to avoid import-time crashes
++        continue
++    fn = _callable_from(module, f"{_editor}_cmd")
++    if fn:
++        cli.add_command(fn, name=_editor)
++
+ 
+ # Register optional subcommands packaged under synth_ai.cli.*
+ for _module_path in ("synth_ai.cli.commands.demo", "synth_ai.cli.commands.status", "synth_ai.cli.turso"):
+diff --git a/synth_ai/cli/claude.py b/synth_ai/cli/claude.py
+new file mode 100644
+index 0000000..6ec3555
+--- /dev/null
++++ b/synth_ai/cli/claude.py
+@@ -0,0 +1,44 @@
++from __future__ import annotations
++
++import os
++import subprocess
++
++import click
++
++from synth_ai.utils import find_binary, resolve_env_var
++
++DEFAULT_SYNTH_ANTHROPIC = os.environ.get(
++    "SYNTH_ANTHROPIC_URL", "https://api.synth.research/anthropic/v1"
++)
++
++
++@click.command(name="claude")
++@click.option("--base-url", default=None, help="Override the Anthropic base URL")
++@click.option("--skip-launch", is_flag=True, default=False)
++def claude_cmd(base_url: str | None, skip_launch: bool) -> None:
++    """Prepare environment for Anthropic/Claude CLI and run it.
++
++    Sets `ANTHROPIC_API_BASE` (or uses provided value) and ensures
++    an auth token is available from `SYNTH_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
++    """
++    bin_path = find_binary("claude")
++    if bin_path is None:
++        click.echo("Claude binary not found in PATH.")
++        if not click.confirm("Would you like instructions to install Claude?", default=True):
++            raise click.Abort()
++        click.echo("Please install Claude from https://claude.example/install")
++        raise click.Abort()
++
++    use_base = base_url or DEFAULT_SYNTH_ANTHROPIC
++
++    token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("SYNTH_API_KEY")
++    if not token:
++        token = resolve_env_var("SYNTH_API_KEY")
++
++    os.environ.setdefault("ANTHROPIC_API_BASE", use_base)
++    os.environ.setdefault("ANTHROPIC_AUTH_TOKEN", token)
++
++    click.echo(f"Running claude with ANTHROPIC_API_BASE={use_base}")
++    if not skip_launch:
++        subprocess.run([str(bin_path)])
++
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+new file mode 100644
+index 0000000..e15a0b5
+--- /dev/null
++++ b/synth_ai/cli/codex.py
+@@ -0,0 +1,60 @@
++from __future__ import annotations
++
++import os
++import subprocess
++from pathlib import Path
++
++import click
++
++from synth_ai.types import ModelName
++from synth_ai.utils import find_binary, load_json, write_json, resolve_env_var
++
++SYNTH_OPENAI_COMPAT = os.environ.get(
++    "SYNTH_OPENAI_COMPAT_URL", "https://api.synth.research/openai/v1"
++)
++
++
++@click.command(name="codex")
++@click.option("--model", type=click.Choice(["synth-small", "synth-medium"]), default="synth-small", help="Model to launch")
++@click.option("--force", is_flag=True, default=False, help="Force resolving API key interactively")
++def codex_cmd(model: ModelName, force: bool) -> None:
++    """Locate or install Codex CLI, inject Synth endpoint overrides, and run it.
++
++    This will ensure the Synth API key is available and write a small
++    provider override so Codex points at Synth Research’s OpenAI-compatible
++    endpoint, then launch `codex -m <model>`.
++    """
++    bin_path = find_binary("codex")
++    if bin_path is None:
++        click.echo("Codex binary not found in PATH.")
++        if not click.confirm("Would you like instructions to install Codex?", default=True):
++            raise click.Abort()
++        click.echo("Please install Codex from https://codex.example/install")
++        raise click.Abort()
++
++    if force:
++        # Force interactive resolution: clear env so resolve_env_var will prompt
++        if "SYNTH_API_KEY" in os.environ:
++            del os.environ["SYNTH_API_KEY"]
++
++    key = resolve_env_var("SYNTH_API_KEY")
++
++    # Write a provider override in the user's codex config dir
++    cfg = Path.home() / ".config" / "codex" / "providers.json"
++    data = {}
++    if cfg.exists():
++        try:
++            data = load_json(cfg)
++        except Exception:
++            click.echo(f"Warning: failed to parse {cfg}; preserving file")
++    if not isinstance(data, dict):
++        data = {}
++    data["synth"] = {"base_url": SYNTH_OPENAI_COMPAT}
++    write_json(cfg, data)
++
++    # Ensure runtime env contains token for Codex
++    os.environ.setdefault("SYNTH_API_KEY", key)
++    os.environ.setdefault("OPENAI_API_BASE", SYNTH_OPENAI_COMPAT)
++
++    click.echo(f"Launching codex with model {model} (using Synth endpoint)")
++    subprocess.run([str(bin_path), "-m", model])
+diff --git a/synth_ai/cli/opencode.py b/synth_ai/cli/opencode.py
+new file mode 100644
+index 0000000..627f43e
+--- /dev/null
++++ b/synth_ai/cli/opencode.py
+@@ -0,0 +1,75 @@
++from __future__ import annotations
++
++import os
++import subprocess
++from pathlib import Path
++
++import click
++
++from synth_ai.utils import (
++    find_binary,
++    opencode_config_paths,
++    load_json,
++    write_json,
++    write_env_var_to_json,
++)
++
++
++@click.command(name="opencode")
++@click.option("--launch/--no-launch", default=True)
++def opencode_cmd(launch: bool) -> None:
++    """Prepare OpenCode with Synth credentials and optionally launch it.
++
++    This will ensure the Synth provider is present in the OpenCode config
++    and that the Synth API key is present in the OpenCode auth JSON.
++    """
++    bin_path = find_binary("opencode")
++    if bin_path is None:
++        click.echo("OpenCode binary not found in PATH.")
++        if not click.confirm("Would you like instructions to install OpenCode?", default=True):
++            raise click.Abort()
++        click.echo("Please install OpenCode from https://opencode.example/install")
++        raise click.Abort()
++
++    synth_key = os.environ.get("SYNTH_API_KEY")
++    if not synth_key:
++        raise click.ClickException("SYNTH_API_KEY not set in environment")
++
++    config_path, auth_path = opencode_config_paths()
++
++    # Ensure provider declared in opencode.json
++    config_data = {}
++    if config_path.exists():
++        try:
++            config_data = load_json(config_path)
++        except Exception:
++            click.echo(f"Warning: failed to parse {config_path}; preserving file")
++
++    providers = config_data.get("providers", {}) if isinstance(config_data, dict) else {}
++    providers.setdefault("synth", {"name": "Synth Research", "type": "openai-compatible"})
++    if isinstance(config_data, dict):
++        config_data["providers"] = providers
++    else:
++        config_data = {"providers": providers}
++    write_json(config_path, config_data)
++
++    # Ensure auth.json contains SYNTH_API_KEY
++    auth_data = {}
++    if auth_path.exists():
++        try:
++            auth_data = load_json(auth_path)
++        except Exception:
++            click.echo(f"Warning: failed to parse {auth_path}; preserving file")
++
++    if not isinstance(auth_data, dict):
++        auth_data = {}
++    auth_data["SYNTH_API_KEY"] = synth_key
++    write_json(auth_path, auth_data)
++
++    click.echo(f"Configured OpenCode with Synth provider and key (masked) -> {auth_path}")
++
++    if launch:
++        click.echo(f"Launching OpenCode: {bin_path}")
++        # Use subprocess to exec the binary; allow user to see output
++        subprocess.run([str(bin_path)])
++
+diff --git a/synth_ai/types.py b/synth_ai/types.py
+new file mode 100644
+index 0000000..63c730e
+--- /dev/null
++++ b/synth_ai/types.py
+@@ -0,0 +1,5 @@
++from typing import Literal
++
++# Shared model name choices for lightweight editor integrations
++ModelName = Literal["synth-small", "synth-medium"]
++
+diff --git a/synth_ai/utils/__init__.py b/synth_ai/utils/__init__.py
+index df6c5d7..3641563 100755
+--- a/synth_ai/utils/__init__.py
++++ b/synth_ai/utils/__init__.py
+@@ -3,6 +3,8 @@ from .base_url import PROD_BASE_URL_DEFAULT, get_backend_from_env, get_learning_
+ from .cli import PromptedChoiceOption, PromptedChoiceType, print_next_step
+ from .env import mask_str, resolve_env_var, write_env_var_to_dotenv, write_env_var_to_json
+ from .http import AsyncHttpClient, HTTPError, http_request
++from .paths import find_binary, opencode_config_paths
++from .json import load_json, write_json
+ from .modal import (
+     ensure_modal_installed,
+     ensure_task_app_ready,
+@@ -49,6 +51,10 @@ __all__ = [
+     "HTTPError",
+     "PROD_BASE_URL_DEFAULT",
+     "PromptedChoiceOption",
++    "find_binary",
++    "load_json",
++    "opencode_config_paths",
++    "write_json",
+     "PromptedChoiceType",
+     "SQLD_VERSION",
+     "USER_CONFIG_PATH",
+diff --git a/synth_ai/utils/json.py b/synth_ai/utils/json.py
+new file mode 100644
+index 0000000..0f415c6
+--- /dev/null
++++ b/synth_ai/utils/json.py
+@@ -0,0 +1,20 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any
++
++
++def load_json(path: str | Path) -> Any:
++    p = Path(path).expanduser()
++    with p.open('r', encoding='utf-8') as fh:
++        return json.load(fh)
++
++
++def write_json(path: str | Path, data: Any) -> None:
++    p = Path(path).expanduser()
++    p.parent.mkdir(parents=True, exist_ok=True)
++    with p.open('w', encoding='utf-8') as fh:
++        json.dump(data, fh, indent=2, sort_keys=True)
++        fh.write('\n')
++
+diff --git a/synth_ai/utils/paths.py b/synth_ai/utils/paths.py
+new file mode 100644
+index 0000000..ca14b07
+--- /dev/null
++++ b/synth_ai/utils/paths.py
+@@ -0,0 +1,29 @@
++from __future__ import annotations
++
++import shutil
++from pathlib import Path
++from typing import Optional
++
++
++def find_binary(name: str) -> Optional[Path]:
++    """Locate an executable in PATH and return its Path or ``None``.
++
++    This is a small wrapper around :func:`shutil.which` that returns a
++    :class:`pathlib.Path` for easier downstream use in tests.
++    """
++    which = shutil.which(name)
++    if which is None:
++        return None
++    return Path(which)
++
++
++def opencode_config_paths() -> tuple[Path, Path]:
++    """Return the standard OpenCode config and auth JSON paths.
++
++    (config_path, auth_path)
++    """
++    home = Path.home()
++    config = home / ".config" / "opencode" / "opencode.json"
++    auth = home / ".local" / "share" / "opencode" / "auth.json"
++    return config, auth
++
+diff --git a/tests/unit/cli/test_claude_command.py b/tests/unit/cli/test_claude_command.py
+new file mode 100644
+index 0000000..5ef3a19
+--- /dev/null
++++ b/tests/unit/cli/test_claude_command.py
+@@ -0,0 +1,27 @@
++import os
++from pathlib import Path
++
++from click.testing import CliRunner
++
++import synth_ai.utils as u
++from synth_ai.cli.claude import claude_cmd
++
++
++def test_claude_sets_env_and_respects_base_url(tmp_path, monkeypatch):
++    runner = CliRunner()
++
++    fake_bin = tmp_path / "claude"
++    fake_bin.write_text("#!/bin/sh\necho claude")
++    fake_bin.chmod(0o755)
++
++    monkeypatch.setenv("HOME", str(tmp_path))
++    monkeypatch.setenv("SYNTH_API_KEY", "sk_claude_123")
++
++    monkeypatch.setattr(u, "find_binary", lambda name: fake_bin)
++
++    result = runner.invoke(claude_cmd, ["--base-url", "https://custom.example", "--skip-launch"])
++    assert result.exit_code == 0, result.output
++
++    assert os.environ.get("ANTHROPIC_API_BASE") == "https://custom.example"
++    assert os.environ.get("ANTHROPIC_AUTH_TOKEN") in ("sk_claude_123",)
++
+diff --git a/tests/unit/cli/test_codex_command.py b/tests/unit/cli/test_codex_command.py
+new file mode 100644
+index 0000000..57a2e9b
+--- /dev/null
++++ b/tests/unit/cli/test_codex_command.py
+@@ -0,0 +1,32 @@
++import json
++import os
++from pathlib import Path
++
++from click.testing import CliRunner
++
++import synth_ai.utils as u
++from synth_ai.cli.codex import codex_cmd
++
++
++def test_codex_writes_provider_override(tmp_path, monkeypatch):
++    runner = CliRunner()
++
++    fake_bin = tmp_path / "codex"
++    fake_bin.write_text("#!/bin/sh\necho codex")
++    fake_bin.chmod(0o755)
++
++    monkeypatch.setenv("SYNTH_API_KEY", "sk_codex_123")
++    monkeypatch.setenv("HOME", str(tmp_path))
++
++    # ensure our finder returns the fake binary
++    monkeypatch.setattr(u, "find_binary", lambda name: fake_bin)
++
++    result = runner.invoke(codex_cmd, ["--model", "synth-medium"])
++    assert result.exit_code == 0, result.output
++
++    cfg = Path(tmp_path) / ".config" / "codex" / "providers.json"
++    assert cfg.exists()
++    data = json.loads(cfg.read_text())
++    assert "synth" in data
++    assert data["synth"].get("base_url") is not None
++
+diff --git a/tests/unit/cli/test_opencode_command.py b/tests/unit/cli/test_opencode_command.py
+new file mode 100644
+index 0000000..5c35305
+--- /dev/null
++++ b/tests/unit/cli/test_opencode_command.py
+@@ -0,0 +1,41 @@
++import json
++import os
++from pathlib import Path
++
++import click
++from click.testing import CliRunner
++
++from synth_ai.cli.opencode import opencode_cmd
++
++
++def test_opencode_writes_configs(tmp_path, monkeypatch):
++    runner = CliRunner()
++
++    # Place a fake binary and ensure find_binary will return it
++    fake_bin = tmp_path / "opencode"
++    fake_bin.write_text("#!/bin/sh\necho opencode")
++    fake_bin.chmod(0o755)
++
++    monkeypatch.setenv("SYNTH_API_KEY", "sk_test_abc123")
++    monkeypatch.setenv("HOME", str(tmp_path))
++
++    # Monkeypatch finder to return our fake binary
++    import synth_ai.utils as u
++
++    monkeypatch.setattr(u, "find_binary", lambda name: fake_bin)
++
++    result = runner.invoke(opencode_cmd, ["--no-launch"])
++    assert result.exit_code == 0, result.output
++
++    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
++    auth_path = tmp_path / ".local" / "share" / "opencode" / "auth.json"
++
++    assert config_path.exists()
++    assert auth_path.exists()
++
++    cfg = json.loads(config_path.read_text())
++    auth = json.loads(auth_path.read_text())
++
++    assert "providers" in cfg and "synth" in cfg["providers"]
++    assert auth.get("SYNTH_API_KEY") == "sk_test_abc123"
++

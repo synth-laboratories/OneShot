@@ -16,7 +16,6 @@ This will create:
 
 import argparse
 import json
-import os
 from pathlib import Path
 from datetime import datetime
 
@@ -74,6 +73,7 @@ def main() -> None:
         "diff": diff,
         "evaluation": eval_json.get("evaluation", {}),
         "test_results": eval_json.get("test_results", {}),
+        "sensitivity": (tb_meta.get("sensitivity") or {}).get("level", "unknown"),
         "raw": eval_json,
     }
 
@@ -93,6 +93,7 @@ Generated at: {ts} (UTC)
 - diff: string (git diff)
 - evaluation: object (rubric scores)
 - test_results: object (per-test booleans)
+- sensitivity: safe/sensitive/unknown label
 
 ## Notes
 This is a single-run datum exported from OneShot Bench. Aggregate multiple
@@ -112,5 +113,3 @@ data.jsonl rows across subfolders for a larger dataset.
 
 if __name__ == "__main__":
     main()
-
-

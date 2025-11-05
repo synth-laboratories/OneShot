@@ -1,0 +1,59 @@
+{
+  "task_id": "synth-ai-cuvier-cli",
+  "run_id": "20251105__01-00-45",
+  "evaluation": {
+    "rubrics": {
+      "opencode_launcher": {
+        "criterion": "OpenCode command installs/verifies binary, hydrates config/auth JSON with Synth provider, and launches successfully.",
+        "weight": 0.34,
+        "score": 0.0,
+        "max_score": 1.0,
+        "weighted_score": 0.0,
+        "test_count": 1,
+        "tests_passed": 0
+      },
+      "codex_launcher": {
+        "criterion": "Codex command resolves Synth API key, injects provider overrides, and runs codex with correct model selection.",
+        "weight": 0.33,
+        "score": 0.0,
+        "max_score": 1.0,
+        "weighted_score": 0.0,
+        "test_count": 1,
+        "tests_passed": 0
+      },
+      "claude_launcher": {
+        "criterion": "Claude command sets Anthropic/Synth env vars, trims override URLs, and launches claude binary cleanly.",
+        "weight": 0.33,
+        "score": 0.0,
+        "max_score": 1.0,
+        "weighted_score": 0.0,
+        "test_count": 1,
+        "tests_passed": 0
+      }
+    },
+    "total_score": 0.0,
+    "max_score": 1.0
+  },
+  "test_results": {
+    "tests/unit/cli/test_opencode_command.py": {
+      "success": false,
+      "output": "STDOUT:\n\n\nSTDERR:\n/Users/joshpurtell/Documents/GitHub/OneShot/.venv/bin/python3: No module named pytest\n"
+    },
+    "tests/unit/cli/test_codex_command.py": {
+      "success": false,
+      "output": "STDOUT:\n\n\nSTDERR:\n/Users/joshpurtell/Documents/GitHub/OneShot/.venv/bin/python3: No module named pytest\n"
+    },
+    "tests/unit/cli/test_claude_command.py": {
+      "success": false,
+      "output": "STDOUT:\n\n\nSTDERR:\n/Users/joshpurtell/Documents/GitHub/OneShot/.venv/bin/python3: No module named pytest\n"
+    }
+  },
+  "diff_lines": 433,
+  "agent_metrics": {
+    "tokens_total": 0,
+    "tokens_events": 0,
+    "tool_calls_codex_log": 0,
+    "tool_calls_sessions": 0,
+    "tool_calls_total": 0
+  }
+}

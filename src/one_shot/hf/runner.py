@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional
 
 from datasets import load_dataset
 
@@ -88,7 +88,7 @@ def run_single_task_from_record(
                 if "Total Score:" in line:
                     try:
                         score = float(line.split(':')[1].strip().rstrip('%')) / 100
-                    except:
+                    except (IndexError, ValueError):
                         pass
                 elif "• " in line and "%" in line:
                     try:
@@ -97,7 +97,7 @@ def run_single_task_from_record(
                             rubric_name = parts[0].strip()
                             score_part = parts[1].split('(')[0].strip().rstrip('%')
                             rubric_scores[rubric_name] = float(score_part) / 100
-                    except:
+                    except (IndexError, ValueError):
                         pass
                 elif "✅" in line or "❌" in line:
                     try:
@@ -105,7 +105,7 @@ def run_single_task_from_record(
                             test_name = line.split("tests/")[1].split(":")[0].strip()
                             passed = "✅" in line
                             test_results[test_name] = passed
-                    except:
+                    except (IndexError, ValueError):
                         pass
         duration = time.time() - start_time
         return {
@@ -204,5 +204,4 @@ def generate_report(results: List[Dict]) -> str:
             test_str = f"{passed}/{total}"
         lines.append(f"| {task_id} | {status} | {score} | {rubric_str} | {test_str} | {duration} |")
     return "\n".join(lines)
-
 

@@ -49,6 +49,29 @@ Results are saved in `data/runs/<run_id>/` with:
 
 ## Documentation
 
+The documentation is organized into guides and detailed references:
+
+### 📖 **Documentation Index**
+[View all documentation](docs/README.md) - Complete documentation index
+
+### 🔧 **Creating Datapoints with Synth-AI**
+[View Guide](docs/creating-datapoints-with-synth-ai.md)
+
+Learn how to create new evaluation datapoints using the synth-ai library:
+- Creating task instances with Impetus and Intent
+- Defining custom task metadata
+- Building task sets for evaluation
+- Integrating with OneShot Bench
+
+### 🎯 **Evaluating Codex CLI OneShot**
+[View Guide](docs/evaluating-codex-oneshot.md)
+
+Complete guide to running Codex CLI OneShot evaluation on existing datapoints:
+- Finding and preparing tasks
+- Running evaluations in Docker or Modal
+- Understanding evaluation results and scores
+- Troubleshooting common issues
+
 The guides are organized into four main sections:
 
 ### 📚 **Hello World** - Basic Task Workflow
