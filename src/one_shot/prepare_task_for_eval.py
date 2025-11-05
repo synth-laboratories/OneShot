@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Dict, Any
 
+from one_shot.sensitivity import ensure_task_sensitivity, SensitivityLevel
+
 def fix_git_url(url: str, repo_info: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
     """Fix Git URLs and known problematic repositories."""
     # Convert SSH to HTTPS
@@ -121,6 +123,7 @@ def create_dockerfile(task_meta: Dict[str, Any]) -> str:
 ARG GIT_URL="{repo.get('git_url', '')}"
 ARG GIT_BRANCH="{repo.get('branch', 'main')}"
 ARG GIT_COMMIT="{repo.get('start_commit_sha', 'HEAD')}"
+ARG GITHUB_PAT=""
 ARG TASK_ID="{task_meta.get('task_id', 'unknown')}"
 
 # Prevent interactive prompts
@@ -174,12 +177,21 @@ RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/
 # Create working directory
 WORKDIR /app
 
-# Clone the repository and ensure it's writable
-RUN git clone ${{GIT_URL}} repo \\
-    && cd repo \\
-    && git checkout ${{GIT_BRANCH}} \\
-    && git reset --hard ${{GIT_COMMIT}} \\
-    && chmod -R 777 /app/repo
+# Clone the repository and ensure it's writable (supports optional PAT)
+RUN <<'ONESHOT_CLONE'
+#!/usr/bin/env bash
+set -euo pipefail
+AUTH_URL="$GIT_URL"
+if [[ -n "$GITHUB_PAT" && "$GIT_URL" == https://* ]]; then
+  AUTH_URL="https://x-access-token:${{GITHUB_PAT}}@${{GIT_URL#https://}}"
+fi
+git clone "$AUTH_URL" repo
+cd repo
+git checkout "$GIT_BRANCH"
+git reset --hard "$GIT_COMMIT"
+chmod -R 777 /app/repo
+unset AUTH_URL
+ONESHOT_CLONE
 
 # Copy overlay files into /app
 COPY overlay_files/ /app/
@@ -268,6 +280,15 @@ def prepare_task(created_task_path: Path, prepared_dir: Path) -> None:
         # If a commit is not specified, default to HEAD at build time.
         if not task_meta["repo"].get("start_commit_sha"):
             task_meta["repo"]["start_commit_sha"] = "HEAD"
+    
+    # Determine sensitivity level (safe vs sensitive)
+    gh_pat = os.environ.get("PRIVATE_GITHUB_PAT") or os.environ.get("GH_PAT")
+    sensitivity = ensure_task_sensitivity(task_meta, token=gh_pat)
+    print(f"   Sensitivity: {sensitivity.value}")
+    if sensitivity == SensitivityLevel.SENSITIVE:
+        tags = task_meta.setdefault("metadata", {}).setdefault("tags", [])
+        if "sensitive" not in tags:
+            tags.append("sensitive")
     
     # Convert evaluation format
     if "evaluation" in task_meta:

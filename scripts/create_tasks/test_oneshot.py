@@ -5,7 +5,6 @@ Tests individual components and end-to-end workflow.
 """
 
 import json
-import os
 import sys
 import tempfile
 import subprocess
@@ -14,14 +13,13 @@ import unittest
 from pathlib import Path
 import shutil
 import requests
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Add current directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp_oneshot_server import (
     GitHelpers, 
-    TraceExporter, 
     WorktreeReadiness, 
     OneShotTaskManager,
     MCPServer
@@ -374,7 +372,7 @@ def run_tests(verbose=False):
         
         if result != 0:  # Port is available
             suite.addTests(loader.loadTestsFromTestCase(TestHTTPServer))
-    except:
+    except Exception:
         print("Skipping HTTP server tests")
     
     suite.addTests(loader.loadTestsFromTestCase(TestEndToEnd))

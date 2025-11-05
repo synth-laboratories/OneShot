@@ -42,7 +42,7 @@ EVAL_DOCKER_SCRIPT = REPO_ROOT / "scripts" / "eval_in_docker.sh"
 
 
 def run_cmd(cmd: List[str], env: Dict[str, str] | None = None, quiet: bool = False, verbose: bool = False) -> int:
-    from subprocess import run, PIPE, STDOUT
+    from subprocess import run
     e = os.environ.copy()
     if env:
         e.update(env)
@@ -102,7 +102,6 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 def run_single_task(task: TaskSpec, rollout_dir: Path, idx: int, quiet: bool = False, verbose: bool = False) -> Dict[str, Any]:
     task_dir = Path(task.prepared_dir)
-    slug = task_dir.name
     base = now_ts()
     # Use hyphen for index to keep docker volume mounts valid (avoid ':')
     run_id = f"{base}-{idx}"
@@ -261,7 +260,7 @@ def summarize_rollout(rollout_dir: Path) -> None:
     if not runs_file.exists():
         print(f"No runs.txt in {rollout_dir}", file=sys.stderr)
         sys.exit(1)
-    run_dirs = [Path(l.strip()) for l in runs_file.read_text().splitlines() if l.strip()]
+    run_dirs = [Path(line.strip()) for line in runs_file.read_text().splitlines() if line.strip()]
 
     rows: List[Dict[str, Any]] = []
     for rd in run_dirs:
@@ -301,12 +300,12 @@ def summarize_rollout(rollout_dir: Path) -> None:
     lm_vals: List[float] = []
     for r in rows:
         u = f"{(r['unit']*100):.0f}%" if isinstance(r['unit'], (int, float)) else "N/A"
-        l = f"{(r['lm']*100):.0f}%" if isinstance(r['lm'], (int, float)) else "N/A"
+        lm_str = f"{(r['lm']*100):.0f}%" if isinstance(r['lm'], (int, float)) else "N/A"
         if isinstance(r['unit'], (int, float)):
             unit_vals.append(float(r['unit']))
         if isinstance(r['lm'], (int, float)):
             lm_vals.append(float(r['lm']))
-        print(f"| {r['task']} | {r['run']} | {u} | {l} | {r['tokens'] or 0} | {r['tools'] or 0} |")
+        print(f"| {r['task']} | {r['run']} | {u} | {lm_str} | {r['tokens'] or 0} | {r['tools'] or 0} |")
 
     # Aggregates (overall)
     unit_avg = (sum(unit_vals) / len(unit_vals)) if unit_vals else None
@@ -348,8 +347,8 @@ def summarize_rollout(rollout_dir: Path) -> None:
         f.write("|---|---|---:|---:|---:|---:|\n")
         for r in rows:
             u = f"{(r['unit']*100):.0f}%" if isinstance(r['unit'], (int, float)) else "N/A"
-            l = f"{(r['lm']*100):.0f}%" if isinstance(r['lm'], (int, float)) else "N/A"
-            f.write(f"| {r['task']} | {r['run']} | {u} | {l} | {r['tokens'] or 0} | {r['tools'] or 0} |\n")
+            lm_str = f"{(r['lm']*100):.0f}%" if isinstance(r['lm'], (int, float)) else "N/A"
+            f.write(f"| {r['task']} | {r['run']} | {u} | {lm_str} | {r['tokens'] or 0} | {r['tools'] or 0} |\n")
         f.write("\n## Aggregates\n\n")
         f.write((f"- Unit tests average: {unit_avg*100:.0f}%\n") if unit_avg is not None else "- Unit tests average: N/A\n")
         f.write((f"- LM rubric average: {lm_avg*100:.0f}%\n") if lm_avg is not None else "- LM rubric average: N/A\n")
@@ -459,5 +458,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

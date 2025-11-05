@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
 from .utils import read_text_safe, read_json_safe, stable_task_id, deterministic_hash
 

@@ -225,7 +225,7 @@ def convert_task(old_task_path: Path, new_tasks_dir: Path) -> None:
     print(f"   - Fixed Git URL: {task_meta['repo']['git_url']}")
     print(f"   - Added {len(task_meta['evaluation'].get('rubrics', []))} rubrics")
     print(f"   - Added {len(task_meta['evaluation'].get('test_scripts', []))} test scripts")
-    print(f"   - Created Dockerfile and overlay files")
+    print("   - Created Dockerfile and overlay files")
 
 def main():
     if len(sys.argv) < 2:

@@ -1,11 +1,64 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterable, List, Dict, Any
 
 from datasets import Dataset, DatasetDict, Features, Value, Sequence
 from huggingface_hub import HfApi, create_repo
+from one_shot.sensitivity import detect_repo_sensitivity, SensitivityLevel
+
+
+def _read_records(dataset_dir: Path) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for split_file in dataset_dir.glob("*.jsonl"):
+        if not split_file.is_file():
+            continue
+        with split_file.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                record.setdefault("sensitivity", "unknown")
+                records.append(record)
+    return records
+
+
+def _enforce_sensitivity(records: Iterable[Dict[str, Any]], private: bool, token: Optional[str]) -> None:
+    if private:
+        return
+
+    sensitive_ids: List[str] = []
+    unknown_ids: List[str] = []
+
+    for record in records:
+        sensitivity = (record.get("sensitivity") or "unknown").lower()
+        repo_url = (record.get("repo") or {}).get("git_url", "")
+
+        detected = SensitivityLevel.UNKNOWN
+        if repo_url:
+            detected = detect_repo_sensitivity(repo_url, token)
+            if detected == SensitivityLevel.SENSITIVE and sensitivity != "sensitive":
+                sensitivity = "sensitive"
+
+        if sensitivity == "sensitive":
+            sensitive_ids.append(record.get("task_id") or record.get("task_instance_id", "<unknown-task>"))
+        elif sensitivity == "unknown" and detected != SensitivityLevel.SAFE:
+            unknown_ids.append(record.get("task_id") or record.get("task_instance_id", "<unknown-task>"))
+
+    if sensitive_ids:
+        raise ValueError(
+            "Refusing to upload sensitive tasks to a public Hugging Face dataset: "
+            + ", ".join(sorted(set(sensitive_ids)))
+        )
+    if unknown_ids:
+        raise ValueError(
+            "Unable to confirm sensitivity for tasks: "
+            + ", ".join(sorted(set(unknown_ids)))
+            + ". Mark these tasks explicitly as safe or publish privately."
+        )
 
 
 def load_jsonl_dataset(jsonl_path: Path) -> Dataset:
@@ -28,6 +81,7 @@ def load_jsonl_dataset(jsonl_path: Path) -> Dataset:
         "artifacts": Value("string"),
         "metadata": Value("string"),
         "created_at": Value("string"),
+        "sensitivity": Value("string"),
     })
     for record in records:
         if "evaluation" in record:
@@ -36,6 +90,7 @@ def load_jsonl_dataset(jsonl_path: Path) -> Dataset:
             record["artifacts"] = json.dumps(record["artifacts"])
         if "metadata" in record:
             record["metadata"] = json.dumps(record["metadata"])
+        record.setdefault("sensitivity", "unknown")
     return Dataset.from_list(records, features=features)
 
 
@@ -86,6 +141,7 @@ Each task includes instructions, repository context, and evaluation criteria.
 - `evaluation`: Evaluation configuration (JSON string)
 - `artifacts`: Optional artifacts like diffs, notes (JSON string)
 - `metadata`: Export metadata (JSON string)
+- `sensitivity`: Sensitivity label (`safe`, `sensitive`, `unknown`)
 
 ### Data Splits
 
@@ -141,6 +197,11 @@ def upload_dataset(
     else:
         info = {"statistics": {"exported": 0}}
 
+    gh_pat = os.environ.get("PRIVATE_GITHUB_PAT") or os.environ.get("GH_PAT")
+    records = _read_records(dataset_dir)
+    if records:
+        _enforce_sensitivity(records, private, gh_pat)
+
     api = HfApi(token=token)
     try:
         create_repo(repo_id=repo_id, repo_type="dataset", private=private, token=token)
@@ -168,5 +229,3 @@ def upload_dataset(
         create_pr=create_pr,
     )
     return f"https://huggingface.co/datasets/{repo_id}"
-
-

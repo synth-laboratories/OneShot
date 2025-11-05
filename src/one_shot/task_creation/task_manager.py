@@ -3,11 +3,12 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from .git import GitHelpers
 from .traces import TraceExporter
 from .readiness import WorktreeReadiness
+from one_shot.sensitivity import ensure_task_sensitivity, SensitivityLevel
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,13 @@ class OneShotTaskManager:
             "evaluation": {"content_rubric": [], "location_rubric": [], "clarity_rubric": []}
         }
 
+        gh_pat = os.environ.get("PRIVATE_GITHUB_PAT") or os.environ.get("GH_PAT")
+        sensitivity_level = ensure_task_sensitivity(tb_meta, token=gh_pat)
+        if sensitivity_level == SensitivityLevel.SENSITIVE:
+            meta_tags = tb_meta.setdefault("metadata", {}).setdefault("tags", [])
+            if "sensitive" not in meta_tags:
+                meta_tags.append("sensitive")
+
         with open(task_dir / 'tb_meta.json', 'w') as f:
             json.dump(tb_meta, f, indent=2)
 
@@ -143,7 +151,7 @@ class OneShotTaskManager:
             f.write("import pytest\n\n")
             safe_name = state['task_slug'].replace('-', '_')
             f.write(f"def test_{safe_name}():\n")
-            f.write(f"    pass\n")
+            f.write("    pass\n")
 
         with open(task_dir / 'notes.md', 'w') as f:
             f.write(f"# Task Notes: {state['task_title']}\n\n")
@@ -168,5 +176,3 @@ class OneShotTaskManager:
             "touched_files": touched_files,
             "clean_trace_path": str(trace_dir / 'session_clean.json'),
         }
-
-

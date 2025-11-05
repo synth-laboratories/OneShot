@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
-from .overrides import OverridesManager, EvaluationOverrides, OpenAIConfig
+from .overrides import OverridesManager, EvaluationOverrides
 
 
 @dataclass
@@ -76,7 +76,7 @@ class SpecEvaluator:
 
         # Apply overrides to task configuration
         task_config = self.load_task_config(task_path)
-        updated_config = self.overrides_manager.apply_overrides(task_config)
+        self.overrides_manager.apply_overrides(task_config)
 
         # Create a temporary task directory with overrides
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -298,7 +298,7 @@ class SpecEvaluator:
     def validate_overrides(self, overrides_path: Path) -> bool:
         """Validate that overrides file is properly formatted."""
         try:
-            overrides = self.overrides_manager.load_overrides(overrides_path)
+            self.overrides_manager.load_overrides(overrides_path)
             return True
         except Exception as e:
             print(f"Invalid overrides file: {e}")

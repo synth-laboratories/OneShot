@@ -7,11 +7,10 @@ This provides an alternative to Docker for sandbox execution.
 import json
 import os
 import subprocess
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import modal
 
@@ -78,7 +77,7 @@ def setup_codex_volume(codex_tar_data: bytes) -> Dict:
     tar_buffer = io.BytesIO(codex_tar_data)
     with tarfile.open(fileobj=tar_buffer, mode='r:gz') as tar:
         tar.extractall(path="/codex")
-        print(f"Extracted codex to /codex")
+        print("Extracted codex to /codex")
     
     # List what we extracted
     codex_dir = Path("/codex")
@@ -126,7 +125,6 @@ def run_task(
         Dict with execution results and artifact paths
     """
     import shutil
-    import tempfile
     from pathlib import Path
     
     print("=" * 60)
@@ -235,7 +233,7 @@ def run_task(
             shell=True
         )
         if find_result.stdout:
-            print(f"\nFound executable files with 'codex' in name:")
+            print("\nFound executable files with 'codex' in name:")
             print(find_result.stdout)
         
         return {
@@ -259,7 +257,7 @@ def run_task(
     task_path = Path("/app/task")
     task_path.mkdir(parents=True, exist_ok=True)
     
-    print(f"\n=== TASK FILES UPLOAD ===")
+    print("\n=== TASK FILES UPLOAD ===")
     print(f"Received {len(task_files)} files to process")
     
     for file_path, content in task_files.items():
@@ -286,7 +284,7 @@ def run_task(
     if not tb_meta_path.exists():
         return {
             "status": "error",
-            "message": f"tb_meta.json not found in task files",
+            "message": "tb_meta.json not found in task files",
             "run_id": run_id,
         }
     
@@ -387,22 +385,22 @@ def run_task(
             "run_id": run_id,
         }
     
-    print(f"\n=== PREPARING BOOTSTRAP ENVIRONMENT ===")
+    print("\n=== PREPARING BOOTSTRAP ENVIRONMENT ===")
     
     # Copy tb_meta.json to /app (bootstrap script expects it there)
     shutil.copy(tb_meta_path, "/app/tb_meta.json")
-    print(f"Copied tb_meta.json to /app")
+    print("Copied tb_meta.json to /app")
     
     # Copy .env file if it exists
     env_file = task_path / ".env"
     if env_file.exists():
         shutil.copy(env_file, "/app/.env")
-        print(f"Copied .env to /app")
+        print("Copied .env to /app")
     else:
         print("No .env file found in task files")
     
     # Copy overlay files to /app for bootstrap script to access
-    print(f"\n=== COPYING OVERLAY FILES ===")
+    print("\n=== COPYING OVERLAY FILES ===")
     if (task_path / "overlay_files").exists():
         overlay_files = list((task_path / "overlay_files").iterdir())
         print(f"Found {len(overlay_files)} overlay files")
@@ -419,7 +417,7 @@ def run_task(
         print("No overlay_files directory found")
     
     # List /app directory contents
-    print(f"\n=== /app DIRECTORY CONTENTS ===")
+    print("\n=== /app DIRECTORY CONTENTS ===")
     app_files = os.listdir("/app")
     for f in sorted(app_files):
         path = Path("/app") / f
@@ -434,7 +432,7 @@ def run_task(
     bootstrap_script = Path("/app/box_bootstrap.sh")
     
     if bootstrap_script.exists():
-        print(f"\n=== RUNNING BOOTSTRAP SCRIPT ===")
+        print("\n=== RUNNING BOOTSTRAP SCRIPT ===")
         print(f"Script path: {bootstrap_script}")
         print(f"Script size: {bootstrap_script.stat().st_size} bytes")
         print(f"Script permissions: {oct(bootstrap_script.stat().st_mode)[-3:]}")
@@ -450,7 +448,7 @@ def run_task(
         
         # Run bootstrap script with real-time output and completion detection
         try:
-            print(f"\nExecuting bootstrap script...")
+            print("\nExecuting bootstrap script...")
             print("=" * 60)
             print("BOOTSTRAP OUTPUT (REAL-TIME)")
             print("=" * 60)
@@ -506,7 +504,7 @@ def run_task(
                     
                     # Check if completion marker exists
                     if completion_marker.exists() and not completion_detected:
-                        print(f"\n=== COMPLETION MARKER DETECTED ===")
+                        print("\n=== COMPLETION MARKER DETECTED ===")
                         completion_detected = True
                         # Give a few seconds for final artifacts to be written
                         time.sleep(3)
@@ -546,7 +544,7 @@ def run_task(
             with open(bootstrap_log, "a") as f:
                 f.write(f"\n=== ERROR: {e} ===\n")
     else:
-        print(f"No bootstrap script found, running agent directly...")
+        print("No bootstrap script found, running agent directly...")
         # Run agent directly with instructions
         agent_log_path = artifacts_dir / "agent.log"
         
@@ -666,7 +664,7 @@ def run_task(
     # The bootstrap script writes directly to /app/artifacts
     app_artifacts = Path("/app/artifacts")
     if app_artifacts.exists():
-        print(f"\n=== COPYING ARTIFACTS FROM BOOTSTRAP ===")
+        print("\n=== COPYING ARTIFACTS FROM BOOTSTRAP ===")
         for item in app_artifacts.iterdir():
             if item.is_file():
                 # Skip files already in our directory
@@ -847,7 +845,7 @@ def main(
         run_id = result['run_id']
         
         # Automatically fetch artifacts locally
-        print(f"\n📥 Fetching artifacts to local filesystem...")
+        print("\n📥 Fetching artifacts to local filesystem...")
         local_run_dir = Path(f"./data/runs/{run_id}")
         local_run_dir.mkdir(parents=True, exist_ok=True)
         
@@ -873,7 +871,7 @@ def main(
                         check=False,
                         capture_output=True
                     )
-                except:
+                except Exception:
                     pass
             
             # Display artifacts summary
@@ -933,7 +931,7 @@ def main(
             
         except subprocess.CalledProcessError as e:
             print(f"⚠️  Failed to fetch some artifacts: {e}")
-            print(f"You can manually fetch with:")
+            print("You can manually fetch with:")
             print(f"  modal volume get codex-artifacts {run_id}/ ./data/runs/{run_id}/")
         
         except Exception as e:

@@ -1,0 +1,33 @@
+============================================================
+TEST: tests/unit/cli/test_opencode_command.py
+STATUS: FAILED
+============================================================
+STDOUT:
+
+
+STDERR:
+/Users/joshpurtell/Documents/GitHub/OneShot/.venv/bin/python3: No module named pytest
+
+
+============================================================
+TEST: tests/unit/cli/test_codex_command.py
+STATUS: FAILED
+============================================================
+STDOUT:
+
+
+STDERR:
+/Users/joshpurtell/Documents/GitHub/OneShot/.venv/bin/python3: No module named pytest
+
+
+============================================================
+TEST: tests/unit/cli/test_claude_command.py
+STATUS: FAILED
+============================================================
+STDOUT:
+
+
+STDERR:
+/Users/joshpurtell/Documents/GitHub/OneShot/.venv/bin/python3: No module named pytest
+
+

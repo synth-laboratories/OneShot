@@ -6,7 +6,6 @@ Provides the same functionality as the MCP server but via HTTP endpoints.
 
 import json
 import sys
-import os
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -18,7 +17,7 @@ _SRC_DIR = _REPO_ROOT / 'src'
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from one_shot.task_creation import OneShotTaskManager, WorktreeReadiness
+from one_shot.task_creation import OneShotTaskManager, WorktreeReadiness  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,

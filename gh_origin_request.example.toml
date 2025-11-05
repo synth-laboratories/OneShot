@@ -1,0 +1,16 @@
+[github]
+repo = "owner/project"
+issue_number = 123
+# pr_number = 456  # optional override when multiple PRs close the issue
+
+[linear]
+# ticket_id = "ENG-1234"
+
+[description]
+# text = "Short summary or extra guidance for the agent."
+# file = "notes/extra-context.md"  # relative to this TOML file
+
+[options]
+auto_tests = true
+max_rollouts = 3
+skip_reproduction = false

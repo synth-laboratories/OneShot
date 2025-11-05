@@ -10,6 +10,7 @@ dependencies = [
     "modal>=1.1.1",
     "openai>=1.101.0",
     "mitmproxy>=10.3.0",
+    "synth-ai>=0.2.19",
 ]
 
 [build-system]

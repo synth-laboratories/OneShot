@@ -1,0 +1,2890 @@
+From 55c80aa4a86049b6cd020d2df9693da12d1e6af5 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 14:44:52 -0700
+Subject: [PATCH 01/25] path utils in own file
+
+---
+ synth_ai/utils/__init__.py |  7 ++++++-
+ synth_ai/utils/env.py      | 16 +++-------------
+ synth_ai/utils/paths.py    | 24 ++++++++++++++++++++++++
+ 3 files changed, 33 insertions(+), 14 deletions(-)
+ create mode 100644 synth_ai/utils/paths.py
+
+diff --git a/synth_ai/utils/__init__.py b/synth_ai/utils/__init__.py
+index 7350c2cd..d2929269 100644
+--- a/synth_ai/utils/__init__.py
++++ b/synth_ai/utils/__init__.py
+@@ -1,6 +1,6 @@
+ from . import task_app_state
+ from .base_url import PROD_BASE_URL_DEFAULT, get_backend_from_env, get_learning_v2_base_url
+-from .cli import PromptedChoiceOption, PromptedChoiceType, PromptedPathOption, prompt_for_path, print_next_step
++from .cli import PromptedChoiceOption, PromptedChoiceType, PromptedPathOption, prompt_for_path, print_next_step, prompt_choice
+ from .env import mask_str, resolve_env_var, write_env_var_to_dotenv, write_env_var_to_json
+ from .http import AsyncHttpClient, HTTPError, http_request
+ from .modal import (
+@@ -11,6 +11,7 @@
+     is_modal_public_url,
+     normalize_endpoint_url,
+ )
++from .paths import find_bin_path, get_env_file_paths, get_home_config_file_paths
+ from .process import ensure_local_port_available, popen_capture, popen_stream, popen_stream_capture
+ from .sqld import SQLD_VERSION, find_sqld_binary, install_sqld
+ from .task_app_discovery import AppChoice, discover_eval_config_paths, select_app_choice
+@@ -62,8 +63,11 @@
+     "ensure_port_free",
+     "ensure_task_app_ready",
+     "find_asgi_apps",
++    "find_bin_path",
+     "find_sqld_binary",
+     "get_backend_from_env",
++    "get_env_file_paths",
++    "get_home_config_file_paths",
+     "get_learning_v2_base_url",
+     "http_request",
+     "install_sqld",
+@@ -86,6 +90,7 @@
+     "popen_stream_capture",
+     "preflight_env_key",
+     "print_next_step",
++    "prompt_choice",
+     "read_task_app_config",
+     "record_task_app",
+     "resolve_env_var",
+diff --git a/synth_ai/utils/env.py b/synth_ai/utils/env.py
+index 4a583f9e..fde2bae8 100644
+--- a/synth_ai/utils/env.py
++++ b/synth_ai/utils/env.py
+@@ -5,6 +5,8 @@
+ 
+ import click
+ 
++from .paths import get_env_file_paths, get_home_config_file_paths
++
+ _ENV_SAFE_CHARS = set(string.ascii_letters + string.digits + "_-./:@+=")
+ 
+ 
+@@ -84,18 +86,6 @@ def mask_str(input: str, position: int = 3) -> str:
+     return input[:position] + "..." + input[-position:] if len(input) > position * 2 else "***"
+ 
+ 
+-def get_env_file_paths(base_dir: str | Path = '.') -> list[Path]:
+-    base = Path(base_dir).resolve()
+-    return [path for path in base.rglob(".env*") if path.is_file()]
+-
+-
+-def get_synth_config_file_paths() -> list[Path]:
+-    dir = Path.home() / ".synth-ai"
+-    if not dir.exists():
+-        return []
+-    return [path for path in dir.glob("*.json") if path.is_file()]
+-
+-
+ def filter_env_files_by_key(key: str, paths: list[Path]) -> list[tuple[Path, str]]:
+     matches: list[tuple[Path, str]] = []
+     for path in paths:
+@@ -142,7 +132,7 @@ def resolve_env_var(key: str) -> str:
+     value: str = ""
+ 
+     env_file_paths = filter_env_files_by_key(key, get_env_file_paths())
+-    synth_file_paths = filter_json_files_by_key(key, get_synth_config_file_paths())
++    synth_file_paths = filter_json_files_by_key(key, get_home_config_file_paths(".synth-ai"))
+ 
+     options: list[tuple[str, str]] = []
+     for path, value in env_file_paths:
+diff --git a/synth_ai/utils/paths.py b/synth_ai/utils/paths.py
+new file mode 100644
+index 00000000..f69f0719
+--- /dev/null
++++ b/synth_ai/utils/paths.py
+@@ -0,0 +1,24 @@
++from pathlib import Path
++import shutil
++
++
++def find_bin_path(name: str) -> Path | None:
++    path = shutil.which(name)
++    if not path:
++        return None
++    return Path(path)
++
++
++def get_env_file_paths(base_dir: str | Path = '.') -> list[Path]:
++    base = Path(base_dir).resolve()
++    return [path for path in base.rglob(".env*") if path.is_file()]
++
++
++def get_home_config_file_paths(
++    dir_name: str,
++    file_extension: str = ".json"
++) -> list[Path]:
++    dir = Path.home() / dir_name
++    if not dir.exists():
++        return []
++    return [path for path in dir.glob(f"*.{file_extension}") if path.is_file()]
+
+From b8a6dbc8cc61de4aea0824f8bec9787e63cb4038 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 14:45:14 -0700
+Subject: [PATCH 02/25] added common prompt_choice() fn
+
+---
+ synth_ai/utils/cli.py | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/synth_ai/utils/cli.py b/synth_ai/utils/cli.py
+index aca9b34d..85083f8e 100644
+--- a/synth_ai/utils/cli.py
++++ b/synth_ai/utils/cli.py
+@@ -5,6 +5,25 @@
+ import click
+ 
+ 
++def prompt_choice(msg: str, choices: list[str]) -> str:
++    print(msg)
++    for i, label in enumerate(choices, start=1):
++        print(f" [{i}] {label}")
++    while True:
++        try:
++            choice = click.prompt(
++                "Select an option",
++                default=1,
++                type=int,
++                show_choices=False
++            )
++        except click.Abort:
++            raise
++        if 1 <= choice <= len(choices):
++            return choices[choice - 1]
++        print(f"Invalid selection. Enter a number between 1 and {len(choices)}")
++
++
+ class PromptedChoiceType(click.Choice):
+     """`click.Choice` variant that reprompts with an interactive menu on failure.
+ 
+
+From 00964972b89acd7587b894dee862ed3cb3565639 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 14:45:22 -0700
+Subject: [PATCH 03/25] created codex cmd
+
+---
+ synth_ai/cli/__init__.py |   8 +++
+ synth_ai/cli/codex.py    | 120 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 128 insertions(+)
+ create mode 100644 synth_ai/cli/codex.py
+
+diff --git a/synth_ai/cli/__init__.py b/synth_ai/cli/__init__.py
+index 2a8e9571..20bcb1f3 100644
+--- a/synth_ai/cli/__init__.py
++++ b/synth_ai/cli/__init__.py
+@@ -70,6 +70,14 @@ def _maybe_call(module_path: str, attr: str, *args: Any, **kwargs: Any) -> None:
+     import traceback
+     traceback.print_exc()
+ 
++try:
++    from synth_ai.cli.codex import codex_cmd
++    cli.add_command(codex_cmd, name="codex")
++except Exception as e:
++    import sys
++    print(f"[DEBUG] Failed to register codex command: {e}", file=sys.stderr)
++    import traceback
++
+ try:
+     from synth_ai.cli.eval import command as eval_cmd
+ 
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+new file mode 100644
+index 00000000..9315c3f4
+--- /dev/null
++++ b/synth_ai/cli/codex.py
+@@ -0,0 +1,120 @@
++import click
++from pathlib import Path
++import json
++import os
++import subprocess
++from synth_ai.utils import find_bin_path, prompt_choice
++
++
++BACKEND_URL= "https://agent-learning.onrender.com/api/synth-research"
++MODEL_NAME = "synth-qt3.14"
++
++DIV_CODEX_START = f"{'-' * 24} CODEX CONFIG CHECK START {'-' * 23}"
++DIV_CODEX_END = f"{'-' * 25} CODEX CONFIG CHECK END {'-' * 24}"
++DIV_INSTALL_START = f"{'-' * 29} INSTALL START {'-' * 29}"
++DIV_INSTALL_END = f"{'-' * 30} INSTALL END {'-' * 30}"
++
++INSTALL_CMDS = [
++    "brew install codex",
++    "npm install -g @openai/codex"
++]
++
++
++def install_codex() -> bool:
++    cmd = prompt_choice(
++        "How would you like to install Codex?",
++        INSTALL_CMDS
++    )
++    try:
++        print(f"Installing Codex via {cmd}...")
++        print('\n'+ DIV_INSTALL_START)
++        subprocess.run(cmd.split(), check=True)
++        print(DIV_INSTALL_END + '\n')
++        return True
++    except subprocess.CalledProcessError as e:
++        print(f"Failed to install Codex: {e}")
++        print(DIV_INSTALL_END + '\n')
++        return False
++    
++
++def verify_codex_is_runnable(bin_path: Path) -> bool:
++    try:
++        result = subprocess.run(
++            [bin_path, "--version"],
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            text=True,
++            timeout=3,
++            check=False
++        )
++        return result.returncode == 0
++    except (FileNotFoundError, subprocess.SubprocessError, OSError):
++        return False
++
++
++def find_codex_config_path(bin_path: Path) -> Path | None:
++    default_path = Path(os.path.expanduser('~')) / ".codex" / "config.json"
++    if default_path.exists():
++        return default_path
++    alt_path = Path(bin_path).parent / ".codex" / "config.json"
++    if alt_path.exists():
++        return alt_path
++    return None
++
++
++def update_codex_config(config_path: Path) -> None:
++    config = {}
++    try:
++        config = json.loads(config_path.read_text())
++    except json.JSONDecodeError:
++        pass
++    config.setdefault("providers", {})
++    config["providers"]["synth"] = {
++        "name": "Synth",
++        "baseURL": BACKEND_URL.rstrip('/'),
++        "envKey": "OPENAI_API_KEY"
++    }
++    config["default_model"] = MODEL_NAME
++    config_path.write_text(json.dumps(config, indent=2))
++
++
++@click.command("codex")
++def codex_cmd() -> None:
++    print('\n' + DIV_CODEX_START)
++
++    print("[1/3] Finding your installed Codex...")
++    while True:
++        bin_path = find_bin_path("codex")
++        if bin_path:
++            break
++        print("[1/3] Failed to find your installed Codex")
++        if not install_codex():
++            print(DIV_CODEX_END + '\n')
++            return
++    print(f"[1/3] Found your installed Codex at {bin_path}")
++
++    print("[2/3] Verifying your Codex is runnable via `codex --version`...")
++    if not verify_codex_is_runnable(bin_path):
++        print("[2/3] Failed to verify your installed Codex is runnable")
++        print(DIV_CODEX_END + '\n')
++        return
++    print("[2/3] Verified your installed Codex is runnable")
++
++    print("[3/3] Finding your Codex config...")
++    codex_config_path = find_codex_config_path(bin_path)
++    if not codex_config_path:
++        print("[3/3] Failed to find your Codex config")
++        print(DIV_CODEX_END + '\n')
++        return
++    print(f"[3/3] Found your Codex config at {codex_config_path}")
++    print(DIV_CODEX_END + '\n')
++
++    os.environ.setdefault("OPENAI_API_KEY", MODEL_NAME)
++    update_codex_config(codex_config_path)
++    try:
++        subprocess.run(
++            ["codex", "-m", MODEL_NAME, "How do I find love?"],
++            check=True
++        )
++    except:
++        print("Failed to run Codex")
+
+From 5757c7d3ef409ddc13f52656910c565b6b6e30b7 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 14:53:07 -0700
+Subject: [PATCH 04/25] feeding the dog
+
+---
+ synth_ai/cli/codex.py      | 18 ++++++++----------
+ synth_ai/utils/__init__.py |  9 ++++++++-
+ synth_ai/utils/paths.py    |  2 +-
+ 3 files changed, 17 insertions(+), 12 deletions(-)
+
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index 9315c3f4..cddfef75 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -1,10 +1,11 @@
+-import click
+-from pathlib import Path
++import contextlib
+ import json
+ import os
+ import subprocess
+-from synth_ai.utils import find_bin_path, prompt_choice
++from pathlib import Path
+ 
++import click
++from synth_ai.utils import find_bin_path, prompt_choice
+ 
+ BACKEND_URL= "https://agent-learning.onrender.com/api/synth-research"
+ MODEL_NAME = "synth-qt3.14"
+@@ -41,8 +42,7 @@ def verify_codex_is_runnable(bin_path: Path) -> bool:
+     try:
+         result = subprocess.run(
+             [bin_path, "--version"],
+-            stdout=subprocess.PIPE,
+-            stderr=subprocess.PIPE,
++            capture_output=True,
+             text=True,
+             timeout=3,
+             check=False
+@@ -64,10 +64,8 @@ def find_codex_config_path(bin_path: Path) -> Path | None:
+ 
+ def update_codex_config(config_path: Path) -> None:
+     config = {}
+-    try:
++    with contextlib.suppress(json.JSONDecodeError):
+         config = json.loads(config_path.read_text())
+-    except json.JSONDecodeError:
+-        pass
+     config.setdefault("providers", {})
+     config["providers"]["synth"] = {
+         "name": "Synth",
+@@ -113,8 +111,8 @@ def codex_cmd() -> None:
+     update_codex_config(codex_config_path)
+     try:
+         subprocess.run(
+-            ["codex", "-m", MODEL_NAME, "How do I find love?"],
++            ["codex", "-m", MODEL_NAME, "Tell me about Jacob Roddy Beck"],
+             check=True
+         )
+-    except:
++    except subprocess.CalledProcessError:
+         print("Failed to run Codex")
+diff --git a/synth_ai/utils/__init__.py b/synth_ai/utils/__init__.py
+index d2929269..bb2c7d09 100644
+--- a/synth_ai/utils/__init__.py
++++ b/synth_ai/utils/__init__.py
+@@ -1,6 +1,13 @@
+ from . import task_app_state
+ from .base_url import PROD_BASE_URL_DEFAULT, get_backend_from_env, get_learning_v2_base_url
+-from .cli import PromptedChoiceOption, PromptedChoiceType, PromptedPathOption, prompt_for_path, print_next_step, prompt_choice
++from .cli import (
++    PromptedChoiceOption,
++    PromptedChoiceType,
++    PromptedPathOption,
++    print_next_step,
++    prompt_choice,
++    prompt_for_path,
++)
+ from .env import mask_str, resolve_env_var, write_env_var_to_dotenv, write_env_var_to_json
+ from .http import AsyncHttpClient, HTTPError, http_request
+ from .modal import (
+diff --git a/synth_ai/utils/paths.py b/synth_ai/utils/paths.py
+index f69f0719..22685017 100644
+--- a/synth_ai/utils/paths.py
++++ b/synth_ai/utils/paths.py
+@@ -1,5 +1,5 @@
+-from pathlib import Path
+ import shutil
++from pathlib import Path
+ 
+ 
+ def find_bin_path(name: str) -> Path | None:
+
+From 7138b774926fbfb982981c86e10769799d589cd3 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 14:57:55 -0700
+Subject: [PATCH 05/25] fixed dot bug
+
+---
+ synth_ai/utils/paths.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/synth_ai/utils/paths.py b/synth_ai/utils/paths.py
+index 22685017..da39fbdd 100644
+--- a/synth_ai/utils/paths.py
++++ b/synth_ai/utils/paths.py
+@@ -16,7 +16,7 @@ def get_env_file_paths(base_dir: str | Path = '.') -> list[Path]:
+ 
+ def get_home_config_file_paths(
+     dir_name: str,
+-    file_extension: str = ".json"
++    file_extension: str = "json"
+ ) -> list[Path]:
+     dir = Path.home() / dir_name
+     if not dir.exists():
+
+From 88fd1571d29d90958ee02abca2885e923e57207b Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 15:07:19 -0700
+Subject: [PATCH 06/25] feeding the greptile
+
+---
+ synth_ai/cli/__init__.py | 1 +
+ synth_ai/cli/codex.py    | 3 ++-
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/synth_ai/cli/__init__.py b/synth_ai/cli/__init__.py
+index 20bcb1f3..d839e007 100644
+--- a/synth_ai/cli/__init__.py
++++ b/synth_ai/cli/__init__.py
+@@ -77,6 +77,7 @@ def _maybe_call(module_path: str, attr: str, *args: Any, **kwargs: Any) -> None:
+     import sys
+     print(f"[DEBUG] Failed to register codex command: {e}", file=sys.stderr)
+     import traceback
++    traceback.print_exc()
+ 
+ try:
+     from synth_ai.cli.eval import command as eval_cmd
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index cddfef75..80bd53a3 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -1,6 +1,7 @@
+ import contextlib
+ import json
+ import os
++import shlex
+ import subprocess
+ from pathlib import Path
+ 
+@@ -29,7 +30,7 @@ def install_codex() -> bool:
+     try:
+         print(f"Installing Codex via {cmd}...")
+         print('\n'+ DIV_INSTALL_START)
+-        subprocess.run(cmd.split(), check=True)
++        subprocess.run(shlex.split(cmd), check=True)
+         print(DIV_INSTALL_END + '\n')
+         return True
+     except subprocess.CalledProcessError as e:
+
+From 1110151594c9f364c09e15ab3d9d06161a3b73e9 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 15:37:06 -0700
+Subject: [PATCH 07/25] created shared codex utils
+
+---
+ synth_ai/utils/__init__.py |  4 +++
+ synth_ai/utils/codex.py    | 52 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+)
+ create mode 100644 synth_ai/utils/codex.py
+
+diff --git a/synth_ai/utils/__init__.py b/synth_ai/utils/__init__.py
+index bb2c7d09..693ed2d0 100644
+--- a/synth_ai/utils/__init__.py
++++ b/synth_ai/utils/__init__.py
+@@ -8,6 +8,7 @@
+     prompt_choice,
+     prompt_for_path,
+ )
++from .codex import find_codex_config_path, install_codex, verify_codex_is_runnable
+ from .env import mask_str, resolve_env_var, write_env_var_to_dotenv, write_env_var_to_json
+ from .http import AsyncHttpClient, HTTPError, http_request
+ from .modal import (
+@@ -71,12 +72,14 @@
+     "ensure_task_app_ready",
+     "find_asgi_apps",
+     "find_bin_path",
++    "find_codex_config_path",
+     "find_sqld_binary",
+     "get_backend_from_env",
+     "get_env_file_paths",
+     "get_home_config_file_paths",
+     "get_learning_v2_base_url",
+     "http_request",
++    "install_codex",
+     "install_sqld",
+     "is_local_demo_url",
+     "is_modal_public_url",
+@@ -109,6 +112,7 @@
+     "task_app_state",
+     "update_task_app_entry",
+     "update_user_config",
++    "verify_codex_is_runnable",
+     "write_env_var_to_dotenv",
+     "write_env_var_to_json",
+     "write_task_app_config",
+diff --git a/synth_ai/utils/codex.py b/synth_ai/utils/codex.py
+new file mode 100644
+index 00000000..6d75a65b
+--- /dev/null
++++ b/synth_ai/utils/codex.py
+@@ -0,0 +1,52 @@
++import os
++import shlex
++import subprocess
++from pathlib import Path
++
++from .cli import prompt_choice
++
++
++def install_codex() -> bool:
++    cmd = prompt_choice(
++        "How would you like to install Codex?",
++        [
++            "brew install codex",
++            "npm install -g @openai/codex"
++        ]
++    )
++    div_start = f"{'-' * 29} INSTALL START {'-' * 29}"
++    div_end = f"{'-' * 30} INSTALL END {'-' * 30}"
++    try:
++        print(f"Installing Codex via {cmd}...")
++        print('\n'+ div_start)
++        subprocess.run(shlex.split(cmd), check=True)
++        print(div_end + '\n')
++        return True
++    except subprocess.CalledProcessError as e:
++        print(f"Failed to install Codex: {e}")
++        print(div_end + '\n')
++        return False
++
++
++def verify_codex_is_runnable(bin_path: Path) -> bool:
++    try:
++        result = subprocess.run(
++            [bin_path, "--version"],
++            capture_output=True,
++            text=True,
++            timeout=3,
++            check=False
++        )
++        return result.returncode == 0
++    except (FileNotFoundError, subprocess.SubprocessError, OSError):
++        return False
++
++
++def find_codex_config_path(bin_path: Path) -> Path | None:
++    default_path = Path(os.path.expanduser('~')) / ".codex" / "config.json"
++    if default_path.exists():
++        return default_path
++    alt_path = Path(bin_path).parent / ".codex" / "config.json"
++    if alt_path.exists():
++        return alt_path
++    return None
+
+From 19a87bc5bc50f4a57018c18aba0e479dbeaf7dc8 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 15:57:07 -0700
+Subject: [PATCH 08/25] --model option, moved some functions to shared util
+ file, removed json configuration in favor of codex -config
+
+---
+ synth_ai/cli/codex.py | 134 ++++++++++++++++--------------------------
+ 1 file changed, 50 insertions(+), 84 deletions(-)
+
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index 80bd53a3..06498c8d 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -1,85 +1,40 @@
+-import contextlib
+-import json
+ import os
+-import shlex
+ import subprocess
+-from pathlib import Path
++import typing
++from typing import Literal
+ 
+ import click
+-from synth_ai.utils import find_bin_path, prompt_choice
++from synth_ai.utils import (
++    PromptedChoiceOption,
++    PromptedChoiceType,
++    find_bin_path,
++    install_codex,
++    verify_codex_is_runnable,
++)
+ 
+ BACKEND_URL= "https://agent-learning.onrender.com/api/synth-research"
+-MODEL_NAME = "synth-qt3.14"
+ 
+-DIV_CODEX_START = f"{'-' * 24} CODEX CONFIG CHECK START {'-' * 23}"
+-DIV_CODEX_END = f"{'-' * 25} CODEX CONFIG CHECK END {'-' * 24}"
+-DIV_INSTALL_START = f"{'-' * 29} INSTALL START {'-' * 29}"
+-DIV_INSTALL_END = f"{'-' * 30} INSTALL END {'-' * 30}"
+ 
+-INSTALL_CMDS = [
+-    "brew install codex",
+-    "npm install -g @openai/codex"
+-]
+-
+-
+-def install_codex() -> bool:
+-    cmd = prompt_choice(
+-        "How would you like to install Codex?",
+-        INSTALL_CMDS
+-    )
+-    try:
+-        print(f"Installing Codex via {cmd}...")
+-        print('\n'+ DIV_INSTALL_START)
+-        subprocess.run(shlex.split(cmd), check=True)
+-        print(DIV_INSTALL_END + '\n')
+-        return True
+-    except subprocess.CalledProcessError as e:
+-        print(f"Failed to install Codex: {e}")
+-        print(DIV_INSTALL_END + '\n')
+-        return False
+-    
+-
+-def verify_codex_is_runnable(bin_path: Path) -> bool:
+-    try:
+-        result = subprocess.run(
+-            [bin_path, "--version"],
+-            capture_output=True,
+-            text=True,
+-            timeout=3,
+-            check=False
+-        )
+-        return result.returncode == 0
+-    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+-        return False
+-
+-
+-def find_codex_config_path(bin_path: Path) -> Path | None:
+-    default_path = Path(os.path.expanduser('~')) / ".codex" / "config.json"
+-    if default_path.exists():
+-        return default_path
+-    alt_path = Path(bin_path).parent / ".codex" / "config.json"
+-    if alt_path.exists():
+-        return alt_path
+-    return None
++DIV_START = f"{'-' * 24} CODEX CONFIG CHECK START {'-' * 23}"
++DIV_END = f"{'-' * 25} CODEX CONFIG CHECK END {'-' * 24}"
+ 
+ 
+-def update_codex_config(config_path: Path) -> None:
+-    config = {}
+-    with contextlib.suppress(json.JSONDecodeError):
+-        config = json.loads(config_path.read_text())
+-    config.setdefault("providers", {})
+-    config["providers"]["synth"] = {
+-        "name": "Synth",
+-        "baseURL": BACKEND_URL.rstrip('/'),
+-        "envKey": "OPENAI_API_KEY"
+-    }
+-    config["default_model"] = MODEL_NAME
+-    config_path.write_text(json.dumps(config, indent=2))
++ModelName = Literal[
++    "synth-small",
++    "synth-medium"
++]
+ 
+ 
+ @click.command("codex")
+-def codex_cmd() -> None:
+-    print('\n' + DIV_CODEX_START)
++@click.option(
++    "--model",
++    "model_name",
++    cls=PromptedChoiceOption,
++    type=PromptedChoiceType(list(typing.get_args(ModelName))),
++    required=True
++)
++def codex_cmd(model_name: ModelName) -> None:
++    print('\n' + DIV_START)
+ 
+     print("[1/3] Finding your installed Codex...")
+     while True:
+@@ -88,32 +43,43 @@ def codex_cmd() -> None:
+             break
+         print("[1/3] Failed to find your installed Codex")
+         if not install_codex():
+-            print(DIV_CODEX_END + '\n')
++            print(DIV_END + '\n')
+             return
+     print(f"[1/3] Found your installed Codex at {bin_path}")
+ 
+     print("[2/3] Verifying your Codex is runnable via `codex --version`...")
+     if not verify_codex_is_runnable(bin_path):
+         print("[2/3] Failed to verify your installed Codex is runnable")
+-        print(DIV_CODEX_END + '\n')
++        print(DIV_END + '\n')
+         return
+     print("[2/3] Verified your installed Codex is runnable")
+ 
+-    print("[3/3] Finding your Codex config...")
+-    codex_config_path = find_codex_config_path(bin_path)
+-    if not codex_config_path:
+-        print("[3/3] Failed to find your Codex config")
+-        print(DIV_CODEX_END + '\n')
+-        return
+-    print(f"[3/3] Found your Codex config at {codex_config_path}")
+-    print(DIV_CODEX_END + '\n')
+-
+-    os.environ.setdefault("OPENAI_API_KEY", MODEL_NAME)
+-    update_codex_config(codex_config_path)
++    full_model_name = f"synth/{model_name}"
++    print("[3/3] Preparing Codex overrides for Synth backend...")
++    config_overrides = [
++        'provider="synth"',
++        f'providers.synth={{"name":"Synth","baseURL":"{BACKEND_URL}","envKey":"OPENAI_API_KEY"}}',
++        f'default_model="{full_model_name}"'
++    ]
++    override_args = [arg for override in config_overrides for arg in ("-c", override)]
++    print("[3/3] Prepared Codex overrides")
++    print(DIV_END + '\n')
++
++    env = os.environ.copy()
++    env["OPENAI_API_KEY"] = "dummy-key"
++    env["CODEX_LOG_LEVEL"] = "debug"
++    env["DEBUG"] = "1"
+     try:
+         subprocess.run(
+-            ["codex", "-m", MODEL_NAME, "Tell me about Jacob Roddy Beck"],
+-            check=True
++            [
++                "codex",
++                "-m",
++                full_model_name,
++                *override_args,
++                "Tell me about Jacob Roddy Beck"
++            ],
++            check=True,
++            env=env
+         )
+     except subprocess.CalledProcessError:
+         print("Failed to run Codex")
+
+From cd663078387ee5c7f0ada3f68eab318762d3c356 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 16:17:34 -0700
+Subject: [PATCH 09/25] shared types file for common types
+
+---
+ synth_ai/cli/codex.py | 29 ++++++++++-------------------
+ synth_ai/types.py     | 10 ++++++++++
+ 2 files changed, 20 insertions(+), 19 deletions(-)
+ create mode 100644 synth_ai/types.py
+
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index 06498c8d..a42f0f9c 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -1,9 +1,8 @@
+ import os
+ import subprocess
+-import typing
+-from typing import Literal
+ 
+ import click
++from synth_ai.types import ModelName, MODEL_NAMES
+ from synth_ai.utils import (
+     PromptedChoiceOption,
+     PromptedChoiceType,
+@@ -19,52 +18,44 @@
+ DIV_END = f"{'-' * 25} CODEX CONFIG CHECK END {'-' * 24}"
+ 
+ 
+-ModelName = Literal[
+-    "synth-small",
+-    "synth-medium"
+-]
+-
+-
+ @click.command("codex")
+ @click.option(
+     "--model",
+     "model_name",
+     cls=PromptedChoiceOption,
+-    type=PromptedChoiceType(list(typing.get_args(ModelName))),
++    type=PromptedChoiceType(MODEL_NAMES),
+     required=True
+ )
+ def codex_cmd(model_name: ModelName) -> None:
+     print('\n' + DIV_START)
+ 
+-    print("[1/3] Finding your installed Codex...")
++    print("[1/2] Finding your installed Codex...")
+     while True:
+         bin_path = find_bin_path("codex")
+         if bin_path:
+             break
+-        print("[1/3] Failed to find your installed Codex")
++        print("[1/2] Failed to find your installed Codex")
+         if not install_codex():
+             print(DIV_END + '\n')
+             return
+-    print(f"[1/3] Found your installed Codex at {bin_path}")
++    print(f"[1/2] Found your installed Codex at {bin_path}")
+ 
+-    print("[2/3] Verifying your Codex is runnable via `codex --version`...")
++    print("[2/2] Verifying your Codex is runnable via `codex --version`...")
+     if not verify_codex_is_runnable(bin_path):
+-        print("[2/3] Failed to verify your installed Codex is runnable")
++        print("[2/2] Failed to verify your installed Codex is runnable")
+         print(DIV_END + '\n')
+         return
+-    print("[2/3] Verified your installed Codex is runnable")
++    print("[2/2] Verified your installed Codex is runnable")
++
++    print(DIV_END + '\n')
+ 
+     full_model_name = f"synth/{model_name}"
+-    print("[3/3] Preparing Codex overrides for Synth backend...")
+     config_overrides = [
+         'provider="synth"',
+         f'providers.synth={{"name":"Synth","baseURL":"{BACKEND_URL}","envKey":"OPENAI_API_KEY"}}',
+         f'default_model="{full_model_name}"'
+     ]
+     override_args = [arg for override in config_overrides for arg in ("-c", override)]
+-    print("[3/3] Prepared Codex overrides")
+-    print(DIV_END + '\n')
+-
+     env = os.environ.copy()
+     env["OPENAI_API_KEY"] = "dummy-key"
+     env["CODEX_LOG_LEVEL"] = "debug"
+diff --git a/synth_ai/types.py b/synth_ai/types.py
+new file mode 100644
+index 00000000..baee09bf
+--- /dev/null
++++ b/synth_ai/types.py
+@@ -0,0 +1,10 @@
++import typing
++
++from typing import Literal
++
++
++ModelName = Literal[
++    "synth-small",
++    "synth-medium"
++]
++MODEL_NAMES = list(typing.get_args(ModelName))
+
+From 2e609e68cf28b3dd75b78c8363e6e219a00c7063 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:30:18 -0700
+Subject: [PATCH 10/25] shared urls
+
+---
+ synth_ai/urls.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+ create mode 100644 synth_ai/urls.py
+
+diff --git a/synth_ai/urls.py b/synth_ai/urls.py
+new file mode 100644
+index 00000000..35d309dc
+--- /dev/null
++++ b/synth_ai/urls.py
+@@ -0,0 +1,5 @@
++
++BACKEND_URL_BASE = "https://agent-learning.onrender.com"
++BACKEND_URL_BASE_DEV = "http://127.0.0.1:8000"
++BACKEND_URL_SYNTH_RESEARCH = BACKEND_URL_BASE + "/api/synth-research"
++BACKEND_URL_SYNTH_RESEARCH_CHAT_RESPONSES = BACKEND_URL_SYNTH_RESEARCH + "/chat/responses"
+\ No newline at end of file
+
+From 024d15a8783a4522518e9c971f70b2c03a37c62b Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:30:31 -0700
+Subject: [PATCH 11/25] new opencode cmd
+
+---
+ synth_ai/cli/__init__.py   | 11 ++++++++++
+ synth_ai/utils/opencode.py | 41 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 52 insertions(+)
+ create mode 100644 synth_ai/utils/opencode.py
+
+diff --git a/synth_ai/cli/__init__.py b/synth_ai/cli/__init__.py
+index d839e007..4a556fdb 100644
+--- a/synth_ai/cli/__init__.py
++++ b/synth_ai/cli/__init__.py
+@@ -70,6 +70,17 @@ def _maybe_call(module_path: str, attr: str, *args: Any, **kwargs: Any) -> None:
+     import traceback
+     traceback.print_exc()
+ 
++try:
++    from synth_ai.cli.opencode import opencode_cmd
++
++    cli.add_command(opencode_cmd, name="opencode")
++except Exception as e:
++    import sys
++    print(f"[DEBUG] Failed to register opencode command: {e}", file=sys.stderr)
++    import traceback
++    traceback.print_exc()
++
++
+ try:
+     from synth_ai.cli.codex import codex_cmd
+     cli.add_command(codex_cmd, name="codex")
+diff --git a/synth_ai/utils/opencode.py b/synth_ai/utils/opencode.py
+new file mode 100644
+index 00000000..feee0860
+--- /dev/null
++++ b/synth_ai/utils/opencode.py
+@@ -0,0 +1,41 @@
++import shlex
++import subprocess
++from pathlib import Path
++
++from .cli import prompt_choice
++
++
++def install_opencode() -> bool:
++    cmd = prompt_choice(
++        "How would you like to install OpenCode?",
++        [
++            "brew install sst/tap/opencode",
++            "npm install -g opencode-ai"
++        ]
++    )
++    div_start = f"{'-' * 29} INSTALL START {'-' * 29}"
++    div_end = f"{'-' * 30} INSTALL END {'-' * 30}"
++    try:
++        print(f"Installing OpenCode via `{cmd}`...")
++        print("\n" + div_start)
++        subprocess.run(shlex.split(cmd), check=True)
++        print(div_end + "\n")
++        return True
++    except subprocess.CalledProcessError:
++        print(f"Failed to install OpenCode via `{cmd}`")
++        print(div_end + "\n")
++        return False
++    
++
++def verify_opencode(bin_path: Path) -> bool:
++    try:
++        result = subprocess.run(
++            [str(bin_path), "--version"],
++            capture_output=True,
++            text=True,
++            timeout=3,
++            check=False,
++        )
++        return result.returncode == 0
++    except (OSError, subprocess.SubprocessError):
++        return False
+
+From 8377ea6dbe71f09897baffb71cba001addb336eb Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:30:40 -0700
+Subject: [PATCH 12/25] override process env option
+
+---
+ synth_ai/utils/env.py | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/synth_ai/utils/env.py b/synth_ai/utils/env.py
+index fde2bae8..3c8fe3c3 100644
+--- a/synth_ai/utils/env.py
++++ b/synth_ai/utils/env.py
+@@ -123,9 +123,12 @@ def ensure_env_var(key: str, expected_value: str) -> None:
+         raise ValueError(f"Expected: {key}={expected_value}\nActual: {key}={actual_value}")
+ 
+ 
+-def resolve_env_var(key: str) -> str:
++def resolve_env_var(
++    key: str,
++    override_process_env: bool = False
++) -> str:
+     env_value = os.getenv(key)
+-    if env_value is not None:
++    if env_value is not None and not override_process_env:
+         click.echo(f"Using {key}={mask_str(env_value)} from process environment")
+         return env_value
+ 
+@@ -135,6 +138,10 @@ def resolve_env_var(key: str) -> str:
+     synth_file_paths = filter_json_files_by_key(key, get_home_config_file_paths(".synth-ai"))
+ 
+     options: list[tuple[str, str]] = []
++    if env_value is not None:
++        if not override_process_env:
++            return env_value
++        options.append(("Process environment", env_value))
+     for path, value in env_file_paths:
+         resolved_path = path.resolve()
+         try:
+
+From 3cefc0151220855ab4bc53e0e00e5988443bdf32 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:30:50 -0700
+Subject: [PATCH 13/25] new opencode command
+
+---
+ synth_ai/cli/opencode.py | 119 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 119 insertions(+)
+ create mode 100644 synth_ai/cli/opencode.py
+
+diff --git a/synth_ai/cli/opencode.py b/synth_ai/cli/opencode.py
+new file mode 100644
+index 00000000..4d2c68d5
+--- /dev/null
++++ b/synth_ai/cli/opencode.py
+@@ -0,0 +1,119 @@
++import subprocess
++from pathlib import Path
++
++import click
++from synth_ai.types import MODEL_NAMES, ModelName
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH
++from synth_ai.utils import (
++    PromptedChoiceOption,
++    PromptedChoiceType,
++    create_and_write_json,
++    find_bin_path,
++    install_opencode,
++    load_json_to_dict,
++    mask_str,
++    resolve_env_var,
++    verify_opencode,
++)
++
++DIV_START = f"{'-' * 24} OPENCODE CONFIG CHECK START {'-' * 22}"
++DIV_END = f"{'-' * 25} OPENCODE CONFIG CHECK END {'-' * 23}"
++
++CONFIG_PATH = Path.home() / ".config" / "opencode" / "opencode.json"
++AUTH_PATH = Path.home() / ".local" / "share" / "opencode" / "auth.json"
++SCHEMA_URL = "https://opencode.ai/config.json"
++SYNTH_PROVIDER_ID = "synth"
++
++
++
++def _ensure_synth_provider(config: dict) -> dict:
++    provider_section = config.setdefault("provider", {})
++    synth_provider = provider_section.setdefault(SYNTH_PROVIDER_ID, {})
++    synth_provider["npm"] = "@ai-sdk/openai-compatible"
++    synth_provider.setdefault("name", "Synth")
++
++    options = synth_provider.setdefault("options", {})
++    options["baseURL"] = BACKEND_URL_SYNTH_RESEARCH
++
++    synth_provider.setdefault("models", {})
++    return config
++
++
++def _ensure_synth_auth(api_key: str) -> bool:
++    auth_data = load_json_to_dict(AUTH_PATH)
++    desired_entry = {
++        "type": "api",
++        "key": api_key,
++    }
++    if auth_data.get(SYNTH_PROVIDER_ID) == desired_entry:
++        return False
++    auth_data[SYNTH_PROVIDER_ID] = desired_entry
++    create_and_write_json(AUTH_PATH, auth_data)
++    return True
++
++
++def _ensure_model_entry(config: dict, model_name: str) -> dict:
++    provider_section = config.setdefault("provider", {})
++    synth_provider = provider_section.setdefault(SYNTH_PROVIDER_ID, {})
++    models = synth_provider.setdefault("models", {})
++    models.setdefault(model_name, {})
++    return config
++
++
++@click.command("opencode")
++@click.option(
++    "--model",
++    "model_name",
++    cls=PromptedChoiceOption,
++    type=PromptedChoiceType(MODEL_NAMES),
++    required=True,
++)
++@click.option(
++    "--force",
++    is_flag=True,
++    help="Prompt for API keys even if cached values exist."
++)
++def opencode_cmd(model_name: ModelName, force: bool = False) -> None:
++    print("\n" + DIV_START)
++
++    print("Finding your installed OpenCode...")
++    while True:
++        bin_path = find_bin_path("opencode")
++        if bin_path:
++            break
++        if not install_opencode():
++            print("Failed to find your installed OpenCode")
++            print(DIV_END + "\n")
++            return
++    print(f"Found your installed OpenCode at {bin_path}")
++
++    print("Verifying your OpenCode is runnable via `opencode --version`...")
++    if not verify_opencode(bin_path):
++        print("Failed to verify your installed OpenCode is runnable")
++        print(DIV_END + "\n")
++        return
++    print("Verified your installed OpenCode is runnable")
++
++    print("Registering your Synth API key with OpenCode...")
++    synth_api_key = resolve_env_var("SYNTH_API_KEY", override_process_env=force)
++    if _ensure_synth_auth(synth_api_key):
++        print(f"Stored Synth API key ({mask_str(synth_api_key)}) in {AUTH_PATH}")
++    else:
++        print(f"Synth API key already present in {AUTH_PATH}")
++
++    print("Updating your OpenCode config...")
++    config = load_json_to_dict(CONFIG_PATH)
++    config.setdefault("$schema", SCHEMA_URL)
++    config = _ensure_synth_provider(config)
++    config = _ensure_model_entry(config, model_name)
++    full_model_name = f"{SYNTH_PROVIDER_ID}/{model_name}"
++    config["model"] = full_model_name
++    create_and_write_json(CONFIG_PATH, config)
++    print(f"Updated your OpenCode config at {CONFIG_PATH}")
++    print(DIV_END + "\n")
++
++    print("Launching OpenCode...")
++    try:
++        subprocess.run([str(bin_path)], check=True)
++    except subprocess.CalledProcessError:
++        print("Failed to launch OpenCode")
+
+From 06e636e4f3e14eba5ce777a2f2fdff9d00cd44fe Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:31:19 -0700
+Subject: [PATCH 14/25] more exports
+
+---
+ synth_ai/utils/__init__.py | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/synth_ai/utils/__init__.py b/synth_ai/utils/__init__.py
+index 693ed2d0..16f31556 100644
+--- a/synth_ai/utils/__init__.py
++++ b/synth_ai/utils/__init__.py
+@@ -8,9 +8,10 @@
+     prompt_choice,
+     prompt_for_path,
+ )
+-from .codex import find_codex_config_path, install_codex, verify_codex_is_runnable
++from .codex import find_codex_config_path, install_codex, verify_codex
+ from .env import mask_str, resolve_env_var, write_env_var_to_dotenv, write_env_var_to_json
+ from .http import AsyncHttpClient, HTTPError, http_request
++from .json import create_and_write_json, load_json_to_dict, strip_json_comments
+ from .modal import (
+     ensure_modal_installed,
+     ensure_task_app_ready,
+@@ -19,6 +20,7 @@
+     is_modal_public_url,
+     normalize_endpoint_url,
+ )
++from .opencode import install_opencode, verify_opencode
+ from .paths import find_bin_path, get_env_file_paths, get_home_config_file_paths
+ from .process import ensure_local_port_available, popen_capture, popen_stream, popen_stream_capture
+ from .sqld import SQLD_VERSION, find_sqld_binary, install_sqld
+@@ -63,6 +65,7 @@
+     "prompt_for_path",
+     "SQLD_VERSION",
+     "USER_CONFIG_PATH",
++    "create_and_write_json",
+     "current_task_app_id",
+     "discover_eval_config_paths",
+     "ensure_env_credentials",
+@@ -80,10 +83,12 @@
+     "get_learning_v2_base_url",
+     "http_request",
+     "install_codex",
++    "install_opencode",
+     "install_sqld",
+     "is_local_demo_url",
+     "is_modal_public_url",
+     "load_demo_dir",
++    "load_json_to_dict",
+     "load_template_id",
+     "load_user_config",
+     "load_user_env",
+@@ -107,12 +112,14 @@
+     "resolve_task_app_entry",
+     "save_user_config",
+     "select_app_choice",
++    "strip_json_comments",
+     "task_app_config_path",
+     "task_app_id_from_path",
+     "task_app_state",
+     "update_task_app_entry",
+     "update_user_config",
+-    "verify_codex_is_runnable",
++    "verify_codex",
++    "verify_opencode",
+     "write_env_var_to_dotenv",
+     "write_env_var_to_json",
+     "write_task_app_config",
+
+From 5b7e43757b9d4ea538ca6b5905f27081ecd135f8 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:31:25 -0700
+Subject: [PATCH 15/25] shared json hellper file
+
+---
+ synth_ai/utils/json.py | 72 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 72 insertions(+)
+ create mode 100644 synth_ai/utils/json.py
+
+diff --git a/synth_ai/utils/json.py b/synth_ai/utils/json.py
+new file mode 100644
+index 00000000..e43894e5
+--- /dev/null
++++ b/synth_ai/utils/json.py
+@@ -0,0 +1,72 @@
++import json
++from pathlib import Path
++
++
++def strip_json_comments(raw: str) -> str:
++    """Remove // and /* */ comments from JSONC text."""
++    result: list[str] = []
++    in_string = False
++    in_line_comment = False
++    in_block_comment = False
++    escape = False
++    i = 0
++    length = len(raw)
++    while i < length:
++        char = raw[i]
++        next_char = raw[i + 1] if i + 1 < length else ""
++
++        if in_line_comment:
++            if char == "\n":
++                in_line_comment = False
++                result.append(char)
++            i += 1
++            continue
++
++        if in_block_comment:
++            if char == "*" and next_char == "/":
++                in_block_comment = False
++                i += 2
++            else:
++                i += 1
++            continue
++
++        if in_string:
++            result.append(char)
++            if char == "\"" and not escape:
++                in_string = False
++            escape = (char == "\\") and not escape
++            i += 1
++            continue
++
++        if char == "/" and next_char == "/":
++            in_line_comment = True
++            i += 2
++            continue
++
++        if char == "/" and next_char == "*":
++            in_block_comment = True
++            i += 2
++            continue
++
++        if char == "\"":
++            in_string = True
++            escape = False
++
++        result.append(char)
++        i += 1
++
++    return "".join(result)
++
++
++def create_and_write_json(path: Path, content: dict) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(content, indent=2) + "\n")
++
++
++def load_json_to_dict(path: Path) -> dict:
++    if not path.exists():
++        return {}
++    try:
++        return json.loads(strip_json_comments(path.read_text()))
++    except (json.JSONDecodeError, OSError):
++        return {}
+
+From 0126959f6ad7f63cdb3c6ebb36ec433f434695eb Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:31:35 -0700
+Subject: [PATCH 16/25] marginal
+
+---
+ synth_ai/utils/codex.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/synth_ai/utils/codex.py b/synth_ai/utils/codex.py
+index 6d75a65b..50bf185b 100644
+--- a/synth_ai/utils/codex.py
++++ b/synth_ai/utils/codex.py
+@@ -28,7 +28,7 @@ def install_codex() -> bool:
+         return False
+ 
+ 
+-def verify_codex_is_runnable(bin_path: Path) -> bool:
++def verify_codex(bin_path: Path) -> bool:
+     try:
+         result = subprocess.run(
+             [bin_path, "--version"],
+
+From 84d930a1ec8763550b2099b96b99361a2745175c Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:31:52 -0700
+Subject: [PATCH 17/25] cleaned up
+
+---
+ synth_ai/cli/codex.py | 38 +++++++++++++++++++++-----------------
+ 1 file changed, 21 insertions(+), 17 deletions(-)
+
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index a42f0f9c..5679e298 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -2,18 +2,17 @@
+ import subprocess
+ 
+ import click
+-from synth_ai.types import ModelName, MODEL_NAMES
++from synth_ai.types import MODEL_NAMES, ModelName
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_CHAT_RESPONSES
+ from synth_ai.utils import (
+     PromptedChoiceOption,
+     PromptedChoiceType,
+     find_bin_path,
+     install_codex,
+-    verify_codex_is_runnable,
++    resolve_env_var,
++    verify_codex,
+ )
+ 
+-BACKEND_URL= "https://agent-learning.onrender.com/api/synth-research"
+-
+-
+ DIV_START = f"{'-' * 24} CODEX CONFIG CHECK START {'-' * 23}"
+ DIV_END = f"{'-' * 25} CODEX CONFIG CHECK END {'-' * 24}"
+ 
+@@ -26,40 +25,45 @@
+     type=PromptedChoiceType(MODEL_NAMES),
+     required=True
+ )
+-def codex_cmd(model_name: ModelName) -> None:
++@click.option(
++    "--force",
++    is_flag=True,
++    help="Prompt for API keys even if cached values exist."
++)
++def codex_cmd(model_name: ModelName, force: bool = False) -> None:
+     print('\n' + DIV_START)
+ 
+-    print("[1/2] Finding your installed Codex...")
++    print("Finding your installed Codex...")
+     while True:
+         bin_path = find_bin_path("codex")
+         if bin_path:
+             break
+-        print("[1/2] Failed to find your installed Codex")
+         if not install_codex():
++            print("Failed to find your installed Codex")
+             print(DIV_END + '\n')
+             return
+-    print(f"[1/2] Found your installed Codex at {bin_path}")
++    print(f"Found your installed Codex at {bin_path}")
+ 
+-    print("[2/2] Verifying your Codex is runnable via `codex --version`...")
+-    if not verify_codex_is_runnable(bin_path):
+-        print("[2/2] Failed to verify your installed Codex is runnable")
++    print("Verifying your Codex is runnable via `codex --version`...")
++    if not verify_codex(bin_path):
++        print("Failed to verify your installed Codex is runnable")
+         print(DIV_END + '\n')
+         return
+-    print("[2/2] Verified your installed Codex is runnable")
++    print("Verified your installed Codex is runnable")
+ 
+     print(DIV_END + '\n')
+ 
+     full_model_name = f"synth/{model_name}"
+     config_overrides = [
+         'provider="synth"',
+-        f'providers.synth={{"name":"Synth","baseURL":"{BACKEND_URL}","envKey":"OPENAI_API_KEY"}}',
++        f'providers.synth={{"name":"Synth","baseURL":"{BACKEND_URL_SYNTH_RESEARCH_CHAT_RESPONSES}","envKey":"OPENAI_API_KEY"}}',
+         f'default_model="{full_model_name}"'
+     ]
+     override_args = [arg for override in config_overrides for arg in ("-c", override)]
++
+     env = os.environ.copy()
+-    env["OPENAI_API_KEY"] = "dummy-key"
+-    env["CODEX_LOG_LEVEL"] = "debug"
+-    env["DEBUG"] = "1"
++    env["OPENAI_API_KEY"] = resolve_env_var("SYNTH_API_KEY", override_process_env=force)
++    
+     try:
+         subprocess.run(
+             [
+
+From 74495c518a8211dda9d778715b214e8c2dc445c0 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 18:38:26 -0700
+Subject: [PATCH 18/25] fixed process env option
+
+---
+ synth_ai/utils/env.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/synth_ai/utils/env.py b/synth_ai/utils/env.py
+index 3c8fe3c3..3daa6ac1 100644
+--- a/synth_ai/utils/env.py
++++ b/synth_ai/utils/env.py
+@@ -141,7 +141,7 @@ def resolve_env_var(
+     if env_value is not None:
+         if not override_process_env:
+             return env_value
+-        options.append(("Process environment", env_value))
++        options.append((f"(process environment)  {mask_str(env_value)}", env_value))
+     for path, value in env_file_paths:
+         resolved_path = path.resolve()
+         try:
+
+From 2b807b95f29b6cf03d0f314054b39a5180320110 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 19:49:02 -0700
+Subject: [PATCH 19/25] corrected urls to make sama happy
+
+---
+ synth_ai/urls.py | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/synth_ai/urls.py b/synth_ai/urls.py
+index 35d309dc..92868466 100644
+--- a/synth_ai/urls.py
++++ b/synth_ai/urls.py
+@@ -1,5 +1,2 @@
+-
+ BACKEND_URL_BASE = "https://agent-learning.onrender.com"
+-BACKEND_URL_BASE_DEV = "http://127.0.0.1:8000"
+-BACKEND_URL_SYNTH_RESEARCH = BACKEND_URL_BASE + "/api/synth-research"
+-BACKEND_URL_SYNTH_RESEARCH_CHAT_RESPONSES = BACKEND_URL_SYNTH_RESEARCH + "/chat/responses"
+\ No newline at end of file
++BACKEND_URL_SYNTH_RESEARCH = BACKEND_URL_BASE + "/api/synth-research/v1"
+
+From 3abc2b078c2b03144ca4c24fe8deca66b32c61b7 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 19:49:11 -0700
+Subject: [PATCH 20/25] GOOD
+
+---
+ synth_ai/cli/codex.py | 48 ++++++++++++++++++++++++++++---------------
+ 1 file changed, 31 insertions(+), 17 deletions(-)
+
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index 5679e298..f20f8bb1 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -3,7 +3,7 @@
+ 
+ import click
+ from synth_ai.types import MODEL_NAMES, ModelName
+-from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_CHAT_RESPONSES
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH
+ from synth_ai.utils import (
+     PromptedChoiceOption,
+     PromptedChoiceType,
+@@ -30,7 +30,18 @@
+     is_flag=True,
+     help="Prompt for API keys even if cached values exist."
+ )
+-def codex_cmd(model_name: ModelName, force: bool = False) -> None:
++@click.option(
++    "--url",
++    "override_url",
++    type=str,
++    default=None,
++    required=False,
++)
++def codex_cmd(
++    model_name: ModelName,
++    force: bool = False,
++    override_url: str | None = None
++)-> None:
+     print('\n' + DIV_START)
+ 
+     print("Finding your installed Codex...")
+@@ -53,28 +64,31 @@ def codex_cmd(model_name: ModelName, force: bool = False) -> None:
+ 
+     print(DIV_END + '\n')
+ 
+-    full_model_name = f"synth/{model_name}"
++    if override_url:
++        url = override_url
++        print(f"Using override URL:", url)
++    else:
++        url = BACKEND_URL_SYNTH_RESEARCH
++    provider_config = f'{{name="Synth",base_url="{url}",env_key="OPENAI_API_KEY"}}'
+     config_overrides = [
+-        'provider="synth"',
+-        f'providers.synth={{"name":"Synth","baseURL":"{BACKEND_URL_SYNTH_RESEARCH_CHAT_RESPONSES}","envKey":"OPENAI_API_KEY"}}',
+-        f'default_model="{full_model_name}"'
++        f"model_providers.synth={provider_config}",
++        f'model_provider="synth"',
++        f'default_model="{model_name}"'
+     ]
+     override_args = [arg for override in config_overrides for arg in ("-c", override)]
+ 
+     env = os.environ.copy()
+     env["OPENAI_API_KEY"] = resolve_env_var("SYNTH_API_KEY", override_process_env=force)
++    env["SYNTH_API_KEY"] = env["OPENAI_API_KEY"]
+     
+     try:
+-        subprocess.run(
+-            [
+-                "codex",
+-                "-m",
+-                full_model_name,
+-                *override_args,
+-                "Tell me about Jacob Roddy Beck"
+-            ],
+-            check=True,
+-            env=env
+-        )
++        cmd = [
++            "codex",
++            "-m",
++            model_name,
++            *override_args
++        ]
++        print("Launching Codex command:", " ".join(cmd))
++        subprocess.run(cmd, check=True, env=env)
+     except subprocess.CalledProcessError:
+         print("Failed to run Codex")
+
+From a3a3af0280df6f38868419684297b4b990877b31 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Fri, 31 Oct 2025 20:01:22 -0700
+Subject: [PATCH 21/25] override url, cleaned up
+
+---
+ synth_ai/cli/opencode.py | 69 +++++++++++++++++++++++-----------------
+ 1 file changed, 40 insertions(+), 29 deletions(-)
+
+diff --git a/synth_ai/cli/opencode.py b/synth_ai/cli/opencode.py
+index 4d2c68d5..fcf7aef2 100644
+--- a/synth_ai/cli/opencode.py
++++ b/synth_ai/cli/opencode.py
+@@ -26,38 +26,39 @@
+ 
+ 
+ 
+-def _ensure_synth_provider(config: dict) -> dict:
++def _ensure_synth_provider_in_config(
++    config: dict,
++    url: str,
++    model_name: ModelName
++) -> dict:
+     provider_section = config.setdefault("provider", {})
+     synth_provider = provider_section.setdefault(SYNTH_PROVIDER_ID, {})
++
+     synth_provider["npm"] = "@ai-sdk/openai-compatible"
++
+     synth_provider.setdefault("name", "Synth")
+ 
++    models = synth_provider.setdefault("models", {})
++    models.setdefault(model_name, {})
++
+     options = synth_provider.setdefault("options", {})
+-    options["baseURL"] = BACKEND_URL_SYNTH_RESEARCH
+ 
+-    synth_provider.setdefault("models", {})
++    options["baseURL"] = url
++
+     return config
+ 
+ 
+-def _ensure_synth_auth(api_key: str) -> bool:
+-    auth_data = load_json_to_dict(AUTH_PATH)
+-    desired_entry = {
++def _ensure_synth_api_key_in_auth_file(api_key: str) -> None:
++    data = load_json_to_dict(AUTH_PATH)
++    good_entry = {
+         "type": "api",
+         "key": api_key,
+     }
+-    if auth_data.get(SYNTH_PROVIDER_ID) == desired_entry:
+-        return False
+-    auth_data[SYNTH_PROVIDER_ID] = desired_entry
+-    create_and_write_json(AUTH_PATH, auth_data)
+-    return True
+-
+-
+-def _ensure_model_entry(config: dict, model_name: str) -> dict:
+-    provider_section = config.setdefault("provider", {})
+-    synth_provider = provider_section.setdefault(SYNTH_PROVIDER_ID, {})
+-    models = synth_provider.setdefault("models", {})
+-    models.setdefault(model_name, {})
+-    return config
++    if data.get(SYNTH_PROVIDER_ID) == good_entry:
++        return
++    data[SYNTH_PROVIDER_ID] = good_entry
++    create_and_write_json(AUTH_PATH, data)
++    return
+ 
+ 
+ @click.command("opencode")
+@@ -73,7 +74,18 @@ def _ensure_model_entry(config: dict, model_name: str) -> dict:
+     is_flag=True,
+     help="Prompt for API keys even if cached values exist."
+ )
+-def opencode_cmd(model_name: ModelName, force: bool = False) -> None:
++@click.option(
++    "--url",
++    "override_url",
++    type=str,
++    default=None,
++    required=False,
++)
++def opencode_cmd(
++    model_name: ModelName,
++    force: bool = False,
++    override_url: str | None = None
++) -> None:
+     print("\n" + DIV_START)
+ 
+     print("Finding your installed OpenCode...")
+@@ -95,21 +107,20 @@ def opencode_cmd(model_name: ModelName, force: bool = False) -> None:
+     print("Verified your installed OpenCode is runnable")
+ 
+     print("Registering your Synth API key with OpenCode...")
+-    synth_api_key = resolve_env_var("SYNTH_API_KEY", override_process_env=force)
+-    if _ensure_synth_auth(synth_api_key):
+-        print(f"Stored Synth API key ({mask_str(synth_api_key)}) in {AUTH_PATH}")
+-    else:
+-        print(f"Synth API key already present in {AUTH_PATH}")
++    _ensure_synth_api_key_in_auth_file(resolve_env_var("SYNTH_API_KEY", override_process_env=force))
+ 
+-    print("Updating your OpenCode config...")
+     config = load_json_to_dict(CONFIG_PATH)
+     config.setdefault("$schema", SCHEMA_URL)
+-    config = _ensure_synth_provider(config)
+-    config = _ensure_model_entry(config, model_name)
++    if override_url:
++        url = override_url
++        print("Using override URL:", url)
++    else:
++        url = BACKEND_URL_SYNTH_RESEARCH
++    config = _ensure_synth_provider_in_config(config, url, model_name)
+     full_model_name = f"{SYNTH_PROVIDER_ID}/{model_name}"
+     config["model"] = full_model_name
+     create_and_write_json(CONFIG_PATH, config)
+-    print(f"Updated your OpenCode config at {CONFIG_PATH}")
++
+     print(DIV_END + "\n")
+ 
+     print("Launching OpenCode...")
+
+From da1d280837df92930aaeea5f48783b4f90d31f5d Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Sun, 2 Nov 2025 15:30:15 -0800
+Subject: [PATCH 22/25] claude
+
+---
+ synth_ai/cli/__init__.py | 31 +++++++++++--------
+ synth_ai/cli/claude.py   | 66 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 84 insertions(+), 13 deletions(-)
+ create mode 100644 synth_ai/cli/claude.py
+
+diff --git a/synth_ai/cli/__init__.py b/synth_ai/cli/__init__.py
+index 4a556fdb..d3b538c4 100644
+--- a/synth_ai/cli/__init__.py
++++ b/synth_ai/cli/__init__.py
+@@ -55,32 +55,28 @@ def _maybe_call(module_path: str, attr: str, *args: Any, **kwargs: Any) -> None:
+ # Register core commands implemented as standalone modules
+ try:
+     from synth_ai.cli.setup import setup_cmd
+-
+     cli.add_command(setup_cmd, name="setup")
+-except Exception:
+-    pass
+-
++except Exception as e:
++    import sys
++    print(f"[DEBUG] Failed to register setup command: {e}", file=sys.stderr)
++    import traceback
++    traceback.print_exc()
+ try:
+     from synth_ai.cli.deploy import deploy_cmd
+-
+     cli.add_command(deploy_cmd, name="deploy")
+ except Exception as e:
+     import sys
+     print(f"[DEBUG] Failed to register deploy command: {e}", file=sys.stderr)
+     import traceback
+     traceback.print_exc()
+-
+ try:
+     from synth_ai.cli.opencode import opencode_cmd
+-
+     cli.add_command(opencode_cmd, name="opencode")
+ except Exception as e:
+     import sys
+     print(f"[DEBUG] Failed to register opencode command: {e}", file=sys.stderr)
+     import traceback
+     traceback.print_exc()
+-
+-
+ try:
+     from synth_ai.cli.codex import codex_cmd
+     cli.add_command(codex_cmd, name="codex")
+@@ -89,13 +85,22 @@ def _maybe_call(module_path: str, attr: str, *args: Any, **kwargs: Any) -> None:
+     print(f"[DEBUG] Failed to register codex command: {e}", file=sys.stderr)
+     import traceback
+     traceback.print_exc()
+-
+ try:
+     from synth_ai.cli.eval import command as eval_cmd
+-
+     cli.add_command(eval_cmd, name="eval")
+-except Exception:
+-    pass
++except Exception as e:
++    import sys
++    print(f"[DEBUG] Failed to register eval command: {e}", file=sys.stderr)
++    import traceback
++    traceback.print_exc()
++try:
++    from synth_ai.cli.claude import claude_cmd
++    cli.add_command(claude_cmd, name="claude")
++except Exception as e:
++    import sys
++    print(f"[DEBUG] Failed to register claude command: {e}", file=sys.stderr)
++    import traceback
++    traceback.print_exc()
+ 
+ 
+ # Register optional subcommands packaged under synth_ai.cli.*
+diff --git a/synth_ai/cli/claude.py b/synth_ai/cli/claude.py
+new file mode 100644
+index 00000000..f7ed598e
+--- /dev/null
++++ b/synth_ai/cli/claude.py
+@@ -0,0 +1,66 @@
++import os
++import subprocess
++
++import click
++from synth_ai.types import MODEL_NAMES, ModelName
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_ANTHROPIC
++from synth_ai.utils import (
++    PromptedChoiceOption,
++    PromptedChoiceType,
++    find_bin_path,
++    resolve_env_var,
++)
++
++
++@click.command("claude")
++@click.option(
++    "--model",
++    "model_name",
++    cls=PromptedChoiceOption,
++    type=PromptedChoiceType(MODEL_NAMES),
++    required=True,
++)
++@click.option(
++    "--force",
++    is_flag=True,
++    help="Prompt for API keys even if cached values exist."
++)
++@click.option(
++    "--url",
++    "override_url",
++    type=str,
++    default=None,
++    required=False,
++)
++def claude_cmd(
++    model_name: ModelName,
++    force: bool = False,
++    override_url: str | None = None
++) -> None:
++
++    print("Finding your installed Claude Code...")
++    bin_path = find_bin_path("claude")
++    if not bin_path:
++        print("Failed to find Claude Code installation")
++        print("Please install from: https://claude.com/claude-code")
++        return
++    print(f"Found Claude Code at {bin_path}")
++
++    env = os.environ.copy()
++
++    if override_url:
++        url = f"{override_url.rstrip('/')}/{model_name}"
++        print(f"Using override URL with model: {url}")
++    else:
++        url = f"{BACKEND_URL_SYNTH_RESEARCH_ANTHROPIC}/{model_name}"
++
++    env["ANTHROPIC_BASE_URL"] = url
++
++    api_key = resolve_env_var("SYNTH_API_KEY", override_process_env=force)
++    env["ANTHROPIC_AUTH_TOKEN"] = api_key
++    env["SYNTH_API_KEY"] = api_key
++
++    try:
++        subprocess.run(["claude"], check=True, env=env)
++    except subprocess.CalledProcessError:
++        print("Failed to launch Claude Code")
+
+From cdfcc481752433e8a774e4d54eb3936b09d3dd12 Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Sun, 2 Nov 2025 15:30:23 -0800
+Subject: [PATCH 23/25] url cleanup
+
+---
+ synth_ai/cli/codex.py    |  4 ++--
+ synth_ai/cli/opencode.py |  4 ++--
+ synth_ai/urls.py         | 11 ++++++++++-
+ 3 files changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index f20f8bb1..c77b8992 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -3,7 +3,7 @@
+ 
+ import click
+ from synth_ai.types import MODEL_NAMES, ModelName
+-from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_OPENAI
+ from synth_ai.utils import (
+     PromptedChoiceOption,
+     PromptedChoiceType,
+@@ -68,7 +68,7 @@ def codex_cmd(
+         url = override_url
+         print(f"Using override URL:", url)
+     else:
+-        url = BACKEND_URL_SYNTH_RESEARCH
++        url = BACKEND_URL_SYNTH_RESEARCH_OPENAI
+     provider_config = f'{{name="Synth",base_url="{url}",env_key="OPENAI_API_KEY"}}'
+     config_overrides = [
+         f"model_providers.synth={provider_config}",
+diff --git a/synth_ai/cli/opencode.py b/synth_ai/cli/opencode.py
+index fcf7aef2..469a4d4c 100644
+--- a/synth_ai/cli/opencode.py
++++ b/synth_ai/cli/opencode.py
+@@ -3,7 +3,7 @@
+ 
+ import click
+ from synth_ai.types import MODEL_NAMES, ModelName
+-from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_BASE
+ from synth_ai.utils import (
+     PromptedChoiceOption,
+     PromptedChoiceType,
+@@ -115,7 +115,7 @@ def opencode_cmd(
+         url = override_url
+         print("Using override URL:", url)
+     else:
+-        url = BACKEND_URL_SYNTH_RESEARCH
++        url = BACKEND_URL_SYNTH_RESEARCH_BASE
+     config = _ensure_synth_provider_in_config(config, url, model_name)
+     full_model_name = f"{SYNTH_PROVIDER_ID}/{model_name}"
+     config["model"] = full_model_name
+diff --git a/synth_ai/urls.py b/synth_ai/urls.py
+index 92868466..75e0421c 100644
+--- a/synth_ai/urls.py
++++ b/synth_ai/urls.py
+@@ -1,2 +1,11 @@
++# Base URL for all backends
+ BACKEND_URL_BASE = "https://agent-learning.onrender.com"
+-BACKEND_URL_SYNTH_RESEARCH = BACKEND_URL_BASE + "/api/synth-research/v1"
++
++# Synth Research API base (supports OpenAI, Anthropic, and custom formats)
++# Real routes: /api/synth-research/chat/completions, /api/synth-research/messages
++# V1 routes: /api/synth-research/v1/chat/completions, /api/synth-research/v1/messages
++BACKEND_URL_SYNTH_RESEARCH_BASE = BACKEND_URL_BASE + "/api/synth-research"
++
++# Provider-specific URLs (for SDKs that expect standard paths)
++BACKEND_URL_SYNTH_RESEARCH_OPENAI = BACKEND_URL_SYNTH_RESEARCH_BASE + "/v1"  # For OpenAI SDKs (appends /chat/completions)
++BACKEND_URL_SYNTH_RESEARCH_ANTHROPIC = BACKEND_URL_SYNTH_RESEARCH_BASE  # For Anthropic SDKs (appends /v1/messages)
+
+From 9230ded6fbdd59d14740000fffc214b2e9d657db Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Sun, 2 Nov 2025 15:59:45 -0800
+Subject: [PATCH 24/25] tests for claude codex and opencode cmds
+
+---
+ tests/unit/cli/test_claude_command.py   | 191 ++++++++++++
+ tests/unit/cli/test_codex_command.py    | 279 +++++++++++++++++
+ tests/unit/cli/test_opencode_command.py | 394 ++++++++++++++++++++++++
+ uv.lock                                 |   8 +-
+ 4 files changed, 868 insertions(+), 4 deletions(-)
+ create mode 100644 tests/unit/cli/test_claude_command.py
+ create mode 100644 tests/unit/cli/test_codex_command.py
+ create mode 100644 tests/unit/cli/test_opencode_command.py
+
+diff --git a/tests/unit/cli/test_claude_command.py b/tests/unit/cli/test_claude_command.py
+new file mode 100644
+index 00000000..e1b59c50
+--- /dev/null
++++ b/tests/unit/cli/test_claude_command.py
+@@ -0,0 +1,191 @@
++from __future__ import annotations
++
++import os
++from unittest import mock
++
++import pytest
++from click.testing import CliRunner
++
++from synth_ai.cli.claude import claude_cmd
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_ANTHROPIC
++
++
++@pytest.fixture()
++def runner() -> CliRunner:
++    return CliRunner()
++
++
++@pytest.fixture()
++def mock_env():
++    """Mock environment variables."""
++    return {
++        "PATH": "/usr/bin:/bin",
++        "HOME": "/home/test",
++    }
++
++
++def test_claude_cmd_no_claude_binary_found(runner: CliRunner):
++    """Test that claude_cmd exits gracefully when Claude Code is not found."""
++    with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=None):
++        result = runner.invoke(claude_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Failed to find Claude Code installation" in result.output
++    assert "Please install from: https://claude.com/claude-code" in result.output
++
++
++def test_claude_cmd_with_default_url(runner: CliRunner, mock_env):
++    """Test claude_cmd with default URL (no override)."""
++    mock_bin_path = "/usr/local/bin/claude"
++    mock_api_key = "test-api-key-123"
++
++    with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.claude.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.claude.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(claude_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert f"Found Claude Code at {mock_bin_path}" in result.output
++
++    # Verify subprocess.run was called correctly
++    mock_run.assert_called_once()
++    call_args = mock_run.call_args
++    assert call_args[0][0] == ["claude"]
++    assert call_args[1]["check"] is True
++
++    # Verify environment variables
++    env = call_args[1]["env"]
++    assert env["ANTHROPIC_BASE_URL"] == f"{BACKEND_URL_SYNTH_RESEARCH_ANTHROPIC}/synth-small"
++    assert env["ANTHROPIC_AUTH_TOKEN"] == mock_api_key
++    assert env["SYNTH_API_KEY"] == mock_api_key
++
++
++def test_claude_cmd_with_override_url(runner: CliRunner, mock_env):
++    """Test claude_cmd with custom override URL."""
++    mock_bin_path = "/usr/local/bin/claude"
++    mock_api_key = "test-api-key-456"
++    override_url = "https://custom.example.com/api"
++
++    with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.claude.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.claude.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(claude_cmd, ["--model", "synth-small", "--url", override_url])
++
++    assert result.exit_code == 0
++    assert "Using override URL with model:" in result.output
++
++    # Verify environment variables
++    env = mock_run.call_args[1]["env"]
++    assert env["ANTHROPIC_BASE_URL"] == f"{override_url}/synth-small"
++
++
++def test_claude_cmd_with_override_url_trailing_slash(runner: CliRunner, mock_env):
++    """Test that override URL trailing slashes are properly handled."""
++    mock_bin_path = "/usr/local/bin/claude"
++    mock_api_key = "test-api-key-789"
++    override_url = "https://custom.example.com/api/"
++
++    with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.claude.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.claude.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(claude_cmd, ["--model", "synth-small", "--url", override_url])
++
++    assert result.exit_code == 0
++
++    # Verify trailing slash is removed
++    env = mock_run.call_args[1]["env"]
++    assert env["ANTHROPIC_BASE_URL"] == "https://custom.example.com/api/synth-small"
++
++
++def test_claude_cmd_with_force_flag(runner: CliRunner, mock_env):
++    """Test that --force flag is passed to resolve_env_var."""
++    mock_bin_path = "/usr/local/bin/claude"
++    mock_api_key = "test-api-key-force"
++
++    with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.claude.resolve_env_var", return_value=mock_api_key) as mock_resolve, \
++         mock.patch("synth_ai.cli.claude.subprocess.run"), \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(claude_cmd, ["--model", "synth-small", "--force"])
++
++    assert result.exit_code == 0
++
++    # Verify resolve_env_var was called with force=True
++    mock_resolve.assert_called_once_with("SYNTH_API_KEY", override_process_env=True)
++
++
++def test_claude_cmd_subprocess_error(runner: CliRunner, mock_env):
++    """Test that subprocess errors are handled gracefully."""
++    mock_bin_path = "/usr/local/bin/claude"
++    mock_api_key = "test-api-key-error"
++
++    with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.claude.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.claude.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        # Simulate subprocess failure
++        from subprocess import CalledProcessError
++        mock_run.side_effect = CalledProcessError(1, "claude")
++
++        result = runner.invoke(claude_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Failed to launch Claude Code" in result.output
++
++
++def test_claude_cmd_different_models(runner: CliRunner, mock_env):
++    """Test claude_cmd with different model names."""
++    mock_bin_path = "/usr/local/bin/claude"
++    mock_api_key = "test-api-key-models"
++
++    models = ["synth-small", "synth-medium"]
++
++    for model in models:
++        with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=mock_bin_path), \
++             mock.patch("synth_ai.cli.claude.resolve_env_var", return_value=mock_api_key), \
++             mock.patch("synth_ai.cli.claude.subprocess.run") as mock_run, \
++             mock.patch.dict(os.environ, mock_env, clear=True):
++
++            result = runner.invoke(claude_cmd, ["--model", model])
++
++        assert result.exit_code == 0
++
++        # Verify model name is in URL
++        env = mock_run.call_args[1]["env"]
++        assert env["ANTHROPIC_BASE_URL"].endswith(f"/{model}")
++
++
++def test_claude_cmd_preserves_existing_env_vars(runner: CliRunner):
++    """Test that claude_cmd preserves existing environment variables."""
++    mock_bin_path = "/usr/local/bin/claude"
++    mock_api_key = "test-api-key-preserve"
++
++    test_env = {
++        "PATH": "/usr/bin:/bin",
++        "HOME": "/home/test",
++        "CUSTOM_VAR": "custom_value",
++        "ANOTHER_VAR": "another_value",
++    }
++
++    with mock.patch("synth_ai.cli.claude.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.claude.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.claude.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, test_env, clear=True):
++
++        result = runner.invoke(claude_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++
++    # Verify all original env vars are preserved
++    env = mock_run.call_args[1]["env"]
++    assert env["CUSTOM_VAR"] == "custom_value"
++    assert env["ANOTHER_VAR"] == "another_value"
++    assert env["PATH"] == "/usr/bin:/bin"
+diff --git a/tests/unit/cli/test_codex_command.py b/tests/unit/cli/test_codex_command.py
+new file mode 100644
+index 00000000..bb38671b
+--- /dev/null
++++ b/tests/unit/cli/test_codex_command.py
+@@ -0,0 +1,279 @@
++from __future__ import annotations
++
++import os
++from unittest import mock
++
++import pytest
++from click.testing import CliRunner
++
++from synth_ai.cli.codex import codex_cmd, DIV_START, DIV_END
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_OPENAI
++
++
++@pytest.fixture()
++def runner() -> CliRunner:
++    return CliRunner()
++
++
++@pytest.fixture()
++def mock_env():
++    """Mock environment variables."""
++    return {
++        "PATH": "/usr/bin:/bin",
++        "HOME": "/home/test",
++    }
++
++
++def test_codex_cmd_codex_not_found_no_install(runner: CliRunner):
++    """Test that codex_cmd exits when Codex is not found and install fails."""
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=None), \
++         mock.patch("synth_ai.cli.codex.install_codex", return_value=False):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Failed to find your installed Codex" in result.output
++    assert DIV_END in result.output
++
++
++def test_codex_cmd_codex_found_but_not_runnable(runner: CliRunner):
++    """Test that codex_cmd exits when Codex is found but not runnable."""
++    mock_bin_path = "/usr/local/bin/codex"
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=False):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert f"Found your installed Codex at {mock_bin_path}" in result.output
++    assert "Failed to verify your installed Codex is runnable" in result.output
++    assert DIV_END in result.output
++
++
++def test_codex_cmd_with_default_url(runner: CliRunner, mock_env):
++    """Test codex_cmd with default URL (no override)."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-123"
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.codex.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Verified your installed Codex is runnable" in result.output
++    assert DIV_START in result.output
++    assert DIV_END in result.output
++
++    # Verify subprocess.run was called correctly
++    mock_run.assert_called_once()
++    call_args = mock_run.call_args
++
++    # Check command structure
++    cmd = call_args[0][0]
++    assert cmd[0] == "codex"
++    assert "-m" in cmd
++    assert "synth-small" in cmd
++
++    # Check config overrides
++    assert "-c" in cmd
++    provider_config_idx = cmd.index("-c") + 1
++    # The provider config should contain the URL
++    assert BACKEND_URL_SYNTH_RESEARCH_OPENAI in cmd[provider_config_idx]
++
++    # Verify environment variables
++    env = call_args[1]["env"]
++    assert env["OPENAI_API_KEY"] == mock_api_key
++    assert env["SYNTH_API_KEY"] == mock_api_key
++
++
++def test_codex_cmd_with_override_url(runner: CliRunner, mock_env):
++    """Test codex_cmd with custom override URL."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-456"
++    override_url = "https://custom.example.com/api"
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.codex.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small", "--url", override_url])
++
++    assert result.exit_code == 0
++    assert "Using override URL:" in result.output
++    assert override_url in result.output
++
++    # Verify override URL is in config
++    cmd = mock_run.call_args[0][0]
++    provider_config_idx = cmd.index("-c") + 1
++    assert override_url in cmd[provider_config_idx]
++
++
++def test_codex_cmd_with_force_flag(runner: CliRunner, mock_env):
++    """Test that --force flag is passed to resolve_env_var."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-force"
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key) as mock_resolve, \
++         mock.patch("synth_ai.cli.codex.subprocess.run"), \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small", "--force"])
++
++    assert result.exit_code == 0
++
++    # Verify resolve_env_var was called with force=True
++    mock_resolve.assert_called_once_with("SYNTH_API_KEY", override_process_env=True)
++
++
++def test_codex_cmd_subprocess_error(runner: CliRunner, mock_env):
++    """Test that subprocess errors are handled gracefully."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-error"
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.codex.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        # Simulate subprocess failure
++        from subprocess import CalledProcessError
++        mock_run.side_effect = CalledProcessError(1, "codex")
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Failed to run Codex" in result.output
++
++
++def test_codex_cmd_install_loop_success(runner: CliRunner, mock_env):
++    """Test that codex_cmd retries installation if not found initially."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-install"
++
++    # First call returns None, second call returns path
++    find_calls = [None, mock_bin_path]
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", side_effect=find_calls), \
++         mock.patch("synth_ai.cli.codex.install_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.codex.subprocess.run"), \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert f"Found your installed Codex at {mock_bin_path}" in result.output
++
++
++def test_codex_cmd_config_structure(runner: CliRunner, mock_env):
++    """Test that codex_cmd generates correct config overrides."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-config"
++    model = "synth-small"
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.codex.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(codex_cmd, ["--model", model])
++
++    assert result.exit_code == 0
++
++    # Verify command structure
++    cmd = mock_run.call_args[0][0]
++
++    # Should contain model flag
++    assert "-m" in cmd
++    model_idx = cmd.index("-m") + 1
++    assert cmd[model_idx] == model
++
++    # Should contain multiple -c flags for config overrides
++    c_count = cmd.count("-c")
++    assert c_count == 3  # Three config overrides
++
++    # Verify config content includes provider, model_provider, and default_model
++    config_str = " ".join(cmd)
++    assert "model_providers.synth=" in config_str
++    assert 'model_provider="synth"' in config_str
++    assert f'default_model="{model}"' in config_str
++
++
++def test_codex_cmd_different_models(runner: CliRunner, mock_env):
++    """Test codex_cmd with different model names."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-models"
++
++    models = ["synth-small", "synth-medium"]
++
++    for model in models:
++        with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++             mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++             mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++             mock.patch("synth_ai.cli.codex.subprocess.run") as mock_run, \
++             mock.patch.dict(os.environ, mock_env, clear=True):
++
++            result = runner.invoke(codex_cmd, ["--model", model])
++
++        assert result.exit_code == 0
++
++        # Verify model is in command
++        cmd = mock_run.call_args[0][0]
++        assert model in cmd
++
++
++def test_codex_cmd_prints_launch_command(runner: CliRunner, mock_env):
++    """Test that codex_cmd prints the launch command."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-launch"
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.codex.subprocess.run"), \
++         mock.patch.dict(os.environ, mock_env, clear=True):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Launching Codex command:" in result.output
++    assert "codex" in result.output
++
++
++def test_codex_cmd_preserves_existing_env_vars(runner: CliRunner):
++    """Test that codex_cmd preserves existing environment variables."""
++    mock_bin_path = "/usr/local/bin/codex"
++    mock_api_key = "test-api-key-preserve"
++
++    test_env = {
++        "PATH": "/usr/bin:/bin",
++        "HOME": "/home/test",
++        "CUSTOM_VAR": "custom_value",
++    }
++
++    with mock.patch("synth_ai.cli.codex.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.codex.verify_codex", return_value=True), \
++         mock.patch("synth_ai.cli.codex.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.codex.subprocess.run") as mock_run, \
++         mock.patch.dict(os.environ, test_env, clear=True):
++
++        result = runner.invoke(codex_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++
++    # Verify all original env vars are preserved
++    env = mock_run.call_args[1]["env"]
++    assert env["CUSTOM_VAR"] == "custom_value"
++    assert env["PATH"] == "/usr/bin:/bin"
+diff --git a/tests/unit/cli/test_opencode_command.py b/tests/unit/cli/test_opencode_command.py
+new file mode 100644
+index 00000000..f0219c25
+--- /dev/null
++++ b/tests/unit/cli/test_opencode_command.py
+@@ -0,0 +1,394 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from unittest import mock
++
++import pytest
++from click.testing import CliRunner
++
++from synth_ai.cli.opencode import (
++    opencode_cmd,
++    DIV_START,
++    DIV_END,
++    CONFIG_PATH,
++    AUTH_PATH,
++    SYNTH_PROVIDER_ID,
++    _ensure_synth_provider_in_config,
++    _ensure_synth_api_key_in_auth_file,
++)
++from synth_ai.urls import BACKEND_URL_SYNTH_RESEARCH_BASE
++
++
++@pytest.fixture()
++def runner() -> CliRunner:
++    return CliRunner()
++
++
++@pytest.fixture()
++def mock_env():
++    """Mock environment variables."""
++    return {
++        "PATH": "/usr/bin:/bin",
++        "HOME": "/home/test",
++    }
++
++
++@pytest.fixture()
++def empty_config():
++    """Return an empty config dict."""
++    return {}
++
++
++@pytest.fixture()
++def sample_config():
++    """Return a sample config dict."""
++    return {
++        "$schema": "https://opencode.ai/config.json",
++        "provider": {
++            "other_provider": {
++                "name": "Other Provider",
++                "models": {},
++            }
++        },
++    }
++
++
++def test_opencode_cmd_not_found_no_install(runner: CliRunner):
++    """Test that opencode_cmd exits when OpenCode is not found and install fails."""
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=None), \
++         mock.patch("synth_ai.cli.opencode.install_opencode", return_value=False):
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Failed to find your installed OpenCode" in result.output
++    assert DIV_END in result.output
++
++
++def test_opencode_cmd_found_but_not_runnable(runner: CliRunner):
++    """Test that opencode_cmd exits when OpenCode is found but not runnable."""
++    mock_bin_path = "/usr/local/bin/opencode"
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=False):
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert f"Found your installed OpenCode at {mock_bin_path}" in result.output
++    assert "Failed to verify your installed OpenCode is runnable" in result.output
++    assert DIV_END in result.output
++
++
++def test_opencode_cmd_with_default_url(runner: CliRunner, mock_env, empty_config):
++    """Test opencode_cmd with default URL (no override)."""
++    mock_bin_path = "/usr/local/bin/opencode"
++    mock_api_key = "test-api-key-123"
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=empty_config.copy()), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write, \
++         mock.patch("synth_ai.cli.opencode.subprocess.run") as mock_run:
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Verified your installed OpenCode is runnable" in result.output
++    assert "Registering your Synth API key with OpenCode" in result.output
++    assert "Launching OpenCode" in result.output
++
++    # Verify subprocess.run was called correctly
++    mock_run.assert_called_once()
++    call_args = mock_run.call_args
++    assert call_args[0][0] == [str(mock_bin_path)]
++    assert call_args[1]["check"] is True
++
++    # Verify config was written
++    assert mock_write.call_count >= 2  # Auth file + config file
++
++
++def test_opencode_cmd_with_override_url(runner: CliRunner, mock_env, empty_config):
++    """Test opencode_cmd with custom override URL."""
++    mock_bin_path = "/usr/local/bin/opencode"
++    mock_api_key = "test-api-key-456"
++    override_url = "https://custom.example.com/api"
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=empty_config.copy()), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write, \
++         mock.patch("synth_ai.cli.opencode.subprocess.run"):
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small", "--url", override_url])
++
++    assert result.exit_code == 0
++    assert "Using override URL:" in result.output
++    assert override_url in result.output
++
++    # Verify override URL was written to config
++    config_write_call = [call for call in mock_write.call_args_list if call[0][0] == CONFIG_PATH][0]
++    written_config = config_write_call[0][1]
++    assert written_config["provider"][SYNTH_PROVIDER_ID]["options"]["baseURL"] == override_url
++
++
++def test_opencode_cmd_subprocess_error(runner: CliRunner, mock_env, empty_config):
++    """Test that subprocess errors are handled gracefully."""
++    mock_bin_path = "/usr/local/bin/opencode"
++    mock_api_key = "test-api-key-error"
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=empty_config.copy()), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json"), \
++         mock.patch("synth_ai.cli.opencode.subprocess.run") as mock_run:
++
++        # Simulate subprocess failure
++        from subprocess import CalledProcessError
++        mock_run.side_effect = CalledProcessError(1, "opencode")
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert "Failed to launch OpenCode" in result.output
++
++
++def test_opencode_cmd_install_loop_success(runner: CliRunner, mock_env, empty_config):
++    """Test that opencode_cmd retries installation if not found initially."""
++    mock_bin_path = "/usr/local/bin/opencode"
++    mock_api_key = "test-api-key-install"
++
++    # First call returns None, second call returns path
++    find_calls = [None, mock_bin_path]
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", side_effect=find_calls), \
++         mock.patch("synth_ai.cli.opencode.install_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=empty_config.copy()), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json"), \
++         mock.patch("synth_ai.cli.opencode.subprocess.run"):
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++    assert f"Found your installed OpenCode at {mock_bin_path}" in result.output
++
++
++def test_ensure_synth_provider_in_config_empty():
++    """Test _ensure_synth_provider_in_config with empty config."""
++    config = {}
++    url = "https://api.example.com"
++    model = "synth-small"
++
++    result = _ensure_synth_provider_in_config(config, url, model)
++
++    assert "provider" in result
++    assert SYNTH_PROVIDER_ID in result["provider"]
++
++    synth_provider = result["provider"][SYNTH_PROVIDER_ID]
++    assert synth_provider["npm"] == "@ai-sdk/openai-compatible"
++    assert synth_provider["name"] == "Synth"
++    assert synth_provider["options"]["baseURL"] == url
++    assert model in synth_provider["models"]
++
++
++def test_ensure_synth_provider_in_config_existing_provider():
++    """Test _ensure_synth_provider_in_config preserves existing providers."""
++    config = {
++        "provider": {
++            "other_provider": {
++                "name": "Other",
++                "models": {"model1": {}},
++            }
++        }
++    }
++    url = "https://api.example.com"
++    model = "synth-small"
++
++    result = _ensure_synth_provider_in_config(config, url, model)
++
++    # Verify existing provider is preserved
++    assert "other_provider" in result["provider"]
++    assert result["provider"]["other_provider"]["name"] == "Other"
++
++    # Verify synth provider is added
++    assert SYNTH_PROVIDER_ID in result["provider"]
++
++
++def test_ensure_synth_provider_in_config_updates_url():
++    """Test _ensure_synth_provider_in_config updates URL when called again."""
++    config = {
++        "provider": {
++            SYNTH_PROVIDER_ID: {
++                "npm": "@ai-sdk/openai-compatible",
++                "name": "Synth",
++                "models": {"old_model": {}},
++                "options": {"baseURL": "https://old-url.com"},
++            }
++        }
++    }
++    new_url = "https://new-url.com"
++    new_model = "new_model"
++
++    result = _ensure_synth_provider_in_config(config, new_url, new_model)
++
++    # URL should be updated
++    assert result["provider"][SYNTH_PROVIDER_ID]["options"]["baseURL"] == new_url
++    # Old model should still exist
++    assert "old_model" in result["provider"][SYNTH_PROVIDER_ID]["models"]
++    # New model should be added
++    assert new_model in result["provider"][SYNTH_PROVIDER_ID]["models"]
++
++
++def test_ensure_synth_api_key_in_auth_file_new_file():
++    """Test _ensure_synth_api_key_in_auth_file with empty auth file."""
++    api_key = "test-api-key-new"
++    empty_auth = {}
++
++    with mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=empty_auth), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write:
++
++        _ensure_synth_api_key_in_auth_file(api_key)
++
++    mock_write.assert_called_once()
++    call_args = mock_write.call_args
++    assert call_args[0][0] == AUTH_PATH
++
++    written_data = call_args[0][1]
++    assert SYNTH_PROVIDER_ID in written_data
++    assert written_data[SYNTH_PROVIDER_ID]["type"] == "api"
++    assert written_data[SYNTH_PROVIDER_ID]["key"] == api_key
++
++
++def test_ensure_synth_api_key_in_auth_file_already_correct():
++    """Test _ensure_synth_api_key_in_auth_file when key already matches."""
++    api_key = "test-api-key-same"
++    existing_auth = {
++        SYNTH_PROVIDER_ID: {
++            "type": "api",
++            "key": api_key,
++        }
++    }
++
++    with mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=existing_auth), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write:
++
++        _ensure_synth_api_key_in_auth_file(api_key)
++
++    # Should not write if key already matches
++    mock_write.assert_not_called()
++
++
++def test_ensure_synth_api_key_in_auth_file_updates_key():
++    """Test _ensure_synth_api_key_in_auth_file updates key when different."""
++    new_api_key = "test-api-key-new"
++    existing_auth = {
++        SYNTH_PROVIDER_ID: {
++            "type": "api",
++            "key": "old-api-key",
++        }
++    }
++
++    with mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=existing_auth), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write:
++
++        _ensure_synth_api_key_in_auth_file(new_api_key)
++
++    mock_write.assert_called_once()
++    written_data = mock_write.call_args[0][1]
++    assert written_data[SYNTH_PROVIDER_ID]["key"] == new_api_key
++
++
++def test_ensure_synth_api_key_in_auth_file_preserves_other_providers():
++    """Test _ensure_synth_api_key_in_auth_file preserves other providers."""
++    api_key = "test-api-key-preserve"
++    existing_auth = {
++        "other_provider": {
++            "type": "api",
++            "key": "other-key",
++        }
++    }
++
++    with mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=existing_auth), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write:
++
++        _ensure_synth_api_key_in_auth_file(api_key)
++
++    written_data = mock_write.call_args[0][1]
++    # Other provider should be preserved
++    assert "other_provider" in written_data
++    assert written_data["other_provider"]["key"] == "other-key"
++    # Synth provider should be added
++    assert SYNTH_PROVIDER_ID in written_data
++
++
++def test_opencode_cmd_sets_schema_in_config(runner: CliRunner, mock_env):
++    """Test that opencode_cmd sets $schema in config."""
++    mock_bin_path = "/usr/local/bin/opencode"
++    mock_api_key = "test-api-key-schema"
++    config = {}
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=config), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write, \
++         mock.patch("synth_ai.cli.opencode.subprocess.run"):
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small"])
++
++    assert result.exit_code == 0
++
++    # Find config write call
++    config_write_call = [call for call in mock_write.call_args_list if call[0][0] == CONFIG_PATH][0]
++    written_config = config_write_call[0][1]
++    assert "$schema" in written_config
++    assert written_config["$schema"] == "https://opencode.ai/config.json"
++
++
++def test_opencode_cmd_sets_model_in_config(runner: CliRunner, mock_env, empty_config):
++    """Test that opencode_cmd sets the model in config."""
++    mock_bin_path = "/usr/local/bin/opencode"
++    mock_api_key = "test-api-key-model"
++    model = "synth-small"
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.resolve_env_var", return_value=mock_api_key), \
++         mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=empty_config.copy()), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json") as mock_write, \
++         mock.patch("synth_ai.cli.opencode.subprocess.run"):
++
++        result = runner.invoke(opencode_cmd, ["--model", model])
++
++    assert result.exit_code == 0
++
++    # Find config write call
++    config_write_call = [call for call in mock_write.call_args_list if call[0][0] == CONFIG_PATH][0]
++    written_config = config_write_call[0][1]
++    assert written_config["model"] == f"{SYNTH_PROVIDER_ID}/{model}"
++
++
++def test_opencode_cmd_with_force_flag(runner: CliRunner, mock_env, empty_config):
++    """Test that --force flag is passed to resolve_env_var."""
++    mock_bin_path = "/usr/local/bin/opencode"
++    mock_api_key = "test-api-key-force"
++
++    with mock.patch("synth_ai.cli.opencode.find_bin_path", return_value=mock_bin_path), \
++         mock.patch("synth_ai.cli.opencode.verify_opencode", return_value=True), \
++         mock.patch("synth_ai.cli.opencode.resolve_env_var", return_value=mock_api_key) as mock_resolve, \
++         mock.patch("synth_ai.cli.opencode.load_json_to_dict", return_value=empty_config.copy()), \
++         mock.patch("synth_ai.cli.opencode.create_and_write_json"), \
++         mock.patch("synth_ai.cli.opencode.subprocess.run"):
++
++        result = runner.invoke(opencode_cmd, ["--model", "synth-small", "--force"])
++
++    assert result.exit_code == 0
++
++    # Verify resolve_env_var was called with force=True
++    mock_resolve.assert_called_once_with("SYNTH_API_KEY", override_process_env=True)
+diff --git a/uv.lock b/uv.lock
+index 91437e52..4791009b 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -3366,7 +3366,7 @@ wheels = [
+ 
+ [[package]]
+ name = "synth-ai"
+-version = "0.2.17"
++version = "0.2.18.dev1"
+ source = { editable = "." }
+ dependencies = [
+     { name = "aiohttp" },
+@@ -3496,15 +3496,15 @@ requires-dist = [
+     { name = "libsql", specifier = ">=0.1.8" },
+     { name = "libsql-experimental", specifier = ">=0.0.55" },
+     { name = "mistralai", specifier = ">=1.9.2" },
+-    { name = "modal", specifier = "==1.1.4" },
++    { name = "modal", specifier = ">=1.1.4,<2.0.0" },
+     { name = "morphcloud", marker = "extra == 'all'", specifier = ">=0.1.3" },
+     { name = "morphcloud", marker = "extra == 'swe'", specifier = ">=0.1.3" },
+     { name = "networkx", specifier = ">=3.4.2" },
+     { name = "numpy", specifier = ">=2.2.3" },
+     { name = "openai", specifier = ">=1.99.0" },
+     { name = "openai-harmony", specifier = ">=0.0.1" },
+-    { name = "opentelemetry-api", specifier = ">=1.26.0,<1.27.0" },
+-    { name = "opentelemetry-sdk", specifier = ">=1.26.0,<1.27.0" },
++    { name = "opentelemetry-api", specifier = ">=1.26.0" },
++    { name = "opentelemetry-sdk", specifier = ">=1.26.0" },
+     { name = "pandas", marker = "extra == 'analytics'", specifier = ">=2.2.3" },
+     { name = "pyboy", specifier = ">=2.6.0" },
+     { name = "pydantic", specifier = ">=2.0.0" },
+
+From fa6b095204776947da9da3c3c5f2b742bbd9c5ca Mon Sep 17 00:00:00 2001
+From: Zangus <mike@usesynth.ai>
+Date: Sun, 2 Nov 2025 16:02:06 -0800
+Subject: [PATCH 25/25] feed dog
+
+---
+ synth_ai/cli/codex.py    | 4 ++--
+ synth_ai/cli/opencode.py | 1 -
+ 2 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/synth_ai/cli/codex.py b/synth_ai/cli/codex.py
+index c77b8992..8bf47f93 100644
+--- a/synth_ai/cli/codex.py
++++ b/synth_ai/cli/codex.py
+@@ -66,13 +66,13 @@ def codex_cmd(
+ 
+     if override_url:
+         url = override_url
+-        print(f"Using override URL:", url)
++        print("Using override URL:", url)
+     else:
+         url = BACKEND_URL_SYNTH_RESEARCH_OPENAI
+     provider_config = f'{{name="Synth",base_url="{url}",env_key="OPENAI_API_KEY"}}'
+     config_overrides = [
+         f"model_providers.synth={provider_config}",
+-        f'model_provider="synth"',
++        'model_provider="synth"',
+         f'default_model="{model_name}"'
+     ]
+     override_args = [arg for override in config_overrides for arg in ("-c", override)]
+diff --git a/synth_ai/cli/opencode.py b/synth_ai/cli/opencode.py
+index 469a4d4c..e5859c73 100644
+--- a/synth_ai/cli/opencode.py
++++ b/synth_ai/cli/opencode.py
+@@ -11,7 +11,6 @@
+     find_bin_path,
+     install_opencode,
+     load_json_to_dict,
+-    mask_str,
+     resolve_env_var,
+     verify_opencode,
+ )

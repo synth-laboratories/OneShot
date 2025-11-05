@@ -12,10 +12,8 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 from pathlib import Path
-from typing import Dict, Any
 
 from .task_runner import TaskRunner
 from .overrides import OverridesManager
@@ -41,13 +39,13 @@ def run_with_overrides(args: argparse.Namespace) -> None:
     verbose = args.verbose >= 2
 
     if verbose:
-        print(f"Running evaluation with overrides (verbose mode)...")
+        print("Running evaluation with overrides (verbose mode)...")
         print(f"Task: {task_path}")
         print(f"Overrides: {overrides_path}")
         print(f"Model: {args.model}")
         print(f"Rollouts: {args.rollouts}")
     elif quiet:
-        print(f"[spec_bench] Starting evaluation with overrides...")
+        print("[spec_bench] Starting evaluation with overrides...")
 
     result = runner.run_with_overrides(
         task_path=task_path,
@@ -86,13 +84,13 @@ def quick_eval(args: argparse.Namespace) -> None:
     verbose = args.verbose >= 2
 
     if verbose:
-        print(f"Running quick evaluation (verbose mode)...")
+        print("Running quick evaluation (verbose mode)...")
         print(f"Task: {task_path}")
         print(f"Model: {args.model}")
         if args.openai_base_url:
             print(f"OpenAI Base URL: {args.openai_base_url}")
     elif quiet:
-        print(f"[spec_bench] Starting quick evaluation...")
+        print("[spec_bench] Starting quick evaluation...")
 
     result = runner.quick_eval(
         task_path=task_path,
@@ -131,10 +129,10 @@ def batch_eval(args: argparse.Namespace) -> None:
     verbose = args.verbose >= 2
 
     if verbose:
-        print(f"Running batch evaluation (verbose mode)...")
+        print("Running batch evaluation (verbose mode)...")
         print(f"Config: {config_path}")
     elif quiet:
-        print(f"[spec_bench] Starting batch evaluation...")
+        print("[spec_bench] Starting batch evaluation...")
 
     results = runner.run_from_config(config_path)
     summary = runner.get_evaluation_summary(results)

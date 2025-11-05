@@ -6,20 +6,9 @@ Provides start-task and end-task tools for capturing coding sessions.
 
 import json
 import sys
-import os
-import subprocess
 import asyncio
-import tempfile
-import argparse
 import logging
-import traceback
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, List, Optional
-import sqlite3
-import shutil
-import re
-import hashlib
+from typing import Dict, Any, List
 
 # Ensure src is on sys.path to import package modules
 from pathlib import Path as _PathForSys
@@ -32,7 +21,6 @@ if str(_SRC_DIR) not in sys.path:
 try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, ToolResponse, TextContent
     HAS_MCP_SDK = True
 except ImportError:
     HAS_MCP_SDK = False
@@ -48,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import OneShot implementation from package
-from one_shot.task_creation import OneShotTaskManager, WorktreeReadiness
+from one_shot.task_creation import OneShotTaskManager, WorktreeReadiness  # noqa: E402
 
 # MCP SDK Implementation (if available)
 if HAS_MCP_SDK:
