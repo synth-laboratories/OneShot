@@ -1,0 +1,58 @@
+# Example Harbor job configuration for OneShot tasks
+# 
+# Usage:
+#   harbor run --config examples/harbor_job.yaml \
+#     -p datasets/oneshot-train/tasks/hello-world-example \
+#     -a claude-code \
+#     -m "anthropic/claude-haiku-4-5-20251001"
+
+# Job-level settings
+job_name: "oneshot-evaluation"
+jobs_dir: "jobs"
+
+# Orchestrator configuration
+orchestrator:
+  type: "local"
+  n_concurrent: 4
+  max_retries: 0
+
+# Agent configuration
+# Override with --agent and --model flags if needed
+agent:
+  name: "claude-code"  # Options: oracle, claude-code, terminus, aider, codex, etc.
+  model: "anthropic/claude-haiku-4-5-20251001"
+  kwargs:
+    # Add agent-specific kwargs here
+    # version: "latest"
+    # prompt_template: "custom_template"
+
+# Environment configuration
+environment:
+  type: "docker"  # Options: docker, modal, e2b, daytona, runloop
+  force_build: true
+  delete: true
+  kwargs:
+    # Environment-specific kwargs
+    # For Modal: add any Modal-specific settings here
+
+# Dataset configuration
+# Override with --path, --dataset, or --task-name flags
+dataset:
+  path: null  # Set to local path or use --path flag
+  # dataset: "oneshot-train@1.0"  # Use registry dataset
+  # task_name: "*"  # Include all tasks, or use glob pattern
+  # exclude_task_name: null  # Exclude tasks matching pattern
+
+# Trial settings
+trials:
+  k_attempts: 1  # Number of attempts per trial
+  timeout_multiplier: 1.0  # Multiplier for task timeouts
+
+# Trace export settings
+traces:
+  export: false  # Set to true to export traces after job completes
+  sharegpt: false  # Include ShareGPT format
+  episodes: "all"  # Options: all, last
+  push: false  # Push to Hugging Face Hub
+  repo: null  # HF repo id (org/name) when pushing
+
