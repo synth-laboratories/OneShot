@@ -216,3 +216,5 @@ old/.env
 !README.MD
 !**/README.md
 !**/README.MD
+!docs/agents-opencode.md
+!docs/agents-claude-code.md

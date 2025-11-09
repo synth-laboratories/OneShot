@@ -190,7 +190,6 @@ fi
 echo "[auth] billing mode = $BILLING_MODE"
 
 if [[ "$BILLING_MODE" == "api" ]]; then
-    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
     OPENAI_API_KEY="${OPENAI_API_KEY:-}"
     MODEL_ENV="${OPENAI_MODEL:-gpt-5-mini}"
     IS_SYNTH_MODEL=false
@@ -205,17 +204,14 @@ if [[ "$BILLING_MODE" == "api" ]]; then
         fi
         OPENAI_API_KEY="${SYNTH_API_KEY}"
         export OPENAI_API_KEY
-        OPENROUTER_API_KEY=""
-        unset OPENROUTER_API_KEY
         OPENAI_BASE_URL="${OPENAI_BASE_URL:-$SYNTH_BASE_URL}"
         export OPENAI_BASE_URL
-        export FORCE_OPENAI=1
         echo "[synth] Using Synth backend at ${OPENAI_BASE_URL}"
     else
-        if [[ -z "$OPENROUTER_API_KEY" && -z "$OPENAI_API_KEY" ]]; then
-        echo "Error: billing=api but neither OPENAI_API_KEY nor OPENROUTER_API_KEY is set in the environment." >&2
-        echo "Hint: export OPENAI_API_KEY=sk-... or export OPENROUTER_API_KEY=sk-or-... and retry." >&2
-        exit 1
+        if [[ -z "$OPENAI_API_KEY" ]]; then
+            echo "Error: billing=api requires OPENAI_API_KEY in the environment." >&2
+            echo "Hint: export OPENAI_API_KEY=sk-... and retry." >&2
+            exit 1
         fi
     fi
 else
@@ -306,22 +302,10 @@ if [[ -d "$TASK_PATH_INPUT" ]]; then
 		fi
 	else
 		# API mode: ensure .env exists with OPENAI_API_KEY
-		# Check for OpenRouter support
-		OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
-		if [[ -n "$OPENROUTER_API_KEY" ]]; then
-			# Use OpenRouter
-			OPENAI_API_KEY_VALUE="$OPENROUTER_API_KEY"
-			OPENAI_BASE_URL_VALUE="https://openrouter.ai/api/v1"
-        OPENAI_MODEL_VALUE="${MODEL_ENV}"
-			echo "[openrouter] Detected OPENROUTER_API_KEY, configuring OpenRouter"
-			echo "[openrouter] Model: ${OPENAI_MODEL_VALUE}"
-		else
-			OPENAI_API_KEY_VALUE="${OPENAI_API_KEY}"
-			OPENAI_BASE_URL_VALUE="${OPENAI_BASE_URL:-}"
-        OPENAI_MODEL_VALUE="${MODEL_ENV}"
-		fi
-    MODEL_ENV="${OPENAI_MODEL_VALUE}"
-		
+		OPENAI_API_KEY_VALUE="${OPENAI_API_KEY}"
+		OPENAI_BASE_URL_VALUE="${OPENAI_BASE_URL:-}"
+		OPENAI_MODEL_VALUE="${MODEL_ENV}"
+
 		if [[ ! -f "$TASK_PATH_INPUT/.env" ]]; then
 			{
 				echo "OPENAI_API_KEY=${OPENAI_API_KEY_VALUE}"
@@ -485,72 +469,8 @@ else
         echo "[run] Mounting ~/.codex into container (read-only)"
     fi
 
-    FORCE_OPENAI="${FORCE_OPENAI:-0}"
     OPENAI_MODEL_VALUE="${OPENAI_MODEL:-gpt-5-mini}"
-    if [[ "$BILLING_MODE" == "api" ]]; then
-        OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
-        OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-        ACTIVE_API_KEY="${OPENAI_API_KEY}"
-        MODEL_FOR_SHIM="${OPENAI_MODEL:-gpt-5-mini}"
-        SHIM_REQUIRED="0"
-
-        if [[ "$FORCE_OPENAI" != "1" && -n "$OPENROUTER_API_KEY" ]]; then
-            if PYTHONPATH="${REPO_ROOT}/src" MODEL_FOR_SHIM="$MODEL_FOR_SHIM" python3 - <<'PY'
-import os
-from one_shot.agents.openrouter_responses_shim import requires_responses_api
-
-MODEL_FOR_SHIM = os.environ["MODEL_FOR_SHIM"]
-if requires_responses_api(MODEL_FOR_SHIM):
-    raise SystemExit(0)
-raise SystemExit(1)
-PY
-            then
-                SHIM_REQUIRED="1"
-            fi
-        fi
-
-        if [[ "$SHIM_REQUIRED" == "1" ]]; then
-            echo "[shim] Model ${MODEL_FOR_SHIM} requires Responses API shim"
-            export OPENAI_MODEL="${MODEL_FOR_SHIM}"
-            export OPENROUTER_API_KEY
-            python3 "${REPO_ROOT}/scripts/start_responses_shim.py" > /tmp/oneshot_shim.log 2>&1 &
-            SHIM_PID=$!
-            echo "[shim] Started shim in background (PID: ${SHIM_PID})"
-            sleep 3
-            if ! kill -0 "${SHIM_PID}" 2>/dev/null; then
-                echo "[shim] ERROR: Shim process died. Check /tmp/oneshot_shim.log"
-                cat /tmp/oneshot_shim.log 2>/dev/null || true
-                exit 1
-            fi
-
-            if [[ "$(uname)" == "Linux" ]]; then
-                DOCKER_RUN_OPTS+=( --network host )
-                SHIM_BASE_URL="http://127.0.0.1:63051"
-                echo "[shim] Using host network mode (Linux)"
-            else
-                SHIM_BASE_URL="http://host.docker.internal:63051"
-                DOCKER_RUN_OPTS+=( --add-host host.docker.internal:host-gateway )
-                echo "[shim] Using host.docker.internal (Mac/Windows)"
-            fi
-
-            DOCKER_RUN_OPTS+=( -e "OPENAI_BASE_URL=${SHIM_BASE_URL}" )
-            DOCKER_RUN_OPTS+=( -e "OPENAI_API_KEY=${OPENROUTER_API_KEY}" )
-            OPENAI_MODEL_VALUE="${OPENAI_MODEL:-gpt-5-mini}"
-            ACTIVE_API_KEY="${OPENROUTER_API_KEY}"
-            echo "[run] Using Responses API shim at ${SHIM_BASE_URL}"
-            echo "${SHIM_PID}" > /tmp/oneshot_shim_pid.txt
-        else
-            if [[ "$FORCE_OPENAI" != "1" && -n "$OPENROUTER_API_KEY" ]]; then
-                DOCKER_RUN_OPTS+=( -e "OPENAI_API_KEY=${OPENROUTER_API_KEY}" )
-                DOCKER_RUN_OPTS+=( -e "OPENAI_BASE_URL=https://openrouter.ai/api/v1" )
-                OPENAI_MODEL_VALUE="${OPENAI_MODEL:-gpt-5-mini}"
-                ACTIVE_API_KEY="${OPENROUTER_API_KEY}"
-                echo "[run] Using OpenRouter directly (Chat Completions API)"
-            else
-                OPENAI_MODEL_VALUE="${OPENAI_MODEL:-gpt-5-mini}"
-            fi
-        fi
-    fi
+    ACTIVE_API_KEY="${OPENAI_API_KEY:-}"
 
     echo "[run] Passing OPENAI_API_KEY to container"
     # Force model for this run unless caller overrides OPENAI_MODEL in env
@@ -560,18 +480,15 @@ PY
     DOCKER_RUN_OPTS+=( -e "OPENAI_MODEL=${OPENAI_MODEL_VALUE:-gpt-5-mini}" )
     # Also pass CODEX_MODEL to align with Codex CLI expectations
     DOCKER_RUN_OPTS+=( -e "CODEX_MODEL=${OPENAI_MODEL_VALUE:-gpt-5-mini}" )
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        DOCKER_RUN_OPTS+=( -e "OPENAI_API_KEY=${OPENAI_API_KEY}" )
+    fi
     if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
         DOCKER_RUN_OPTS+=( -e "PRIVATE_GITHUB_PAT=${PRIVATE_GITHUB_PAT}" )
         echo "[run] Passing PRIVATE_GITHUB_PAT to container environment"
     fi
 
     # Provide a per-run Codex config via bind mount so we don't rely on image-baked config
-    OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
-    if [[ -n "$OPENROUTER_API_KEY" ]]; then
-		MODEL_ENV="${OPENAI_MODEL:-gpt-5-mini}"
-	else
-		MODEL_ENV="${OPENAI_MODEL:-gpt-5-mini}"
-	fi
     MODEL_ENV="${OPENAI_MODEL_VALUE:-${OPENAI_MODEL:-gpt-5-mini}}"
     if [[ "$MODEL_ENV" == gpt-5-nano* ]]; then
         REASONING_CONFIG="reasoning_effort = \"medium\""
@@ -582,13 +499,17 @@ PY
     mkdir -p "$CODEX_HOME_DIR"
     mkdir -p "$CODEX_HOME_DIR/sessions"
     if [[ "$IS_SYNTH_MODEL" == "true" ]]; then
+        # Ensure OPENAI_BASE_URL_VALUE is set for synth models
+        if [[ -z "${OPENAI_BASE_URL_VALUE:-}" ]]; then
+            OPENAI_BASE_URL_VALUE="${OPENAI_BASE_URL:-$SYNTH_BASE_URL}"
+        fi
         cat > "$CODEX_HOME_DIR/config.toml" <<EOF
-model_provider = "openai"
+model_provider = "myproxy"
 model = "${MODEL_ENV}"
 
-[model_providers.openai]
+[model_providers.myproxy]
 name = "Synth Backend"
-base_url = "${OPENAI_BASE_URL}"
+base_url = "${OPENAI_BASE_URL_VALUE}"
 wire_api = "chat"
 env_key = "OPENAI_API_KEY"
 EOF
@@ -599,22 +520,15 @@ EOF
         printf '%s\n' "$REASONING_CONFIG" >> "$CODEX_HOME_DIR/config.toml"
     fi
     # In API mode, also create auth.json with the API key for Codex
-    if [[ "$BILLING_MODE" == "api" ]]; then
-		if [[ -n "$OPENROUTER_API_KEY" ]]; then
-			API_KEY_VALUE="$OPENROUTER_API_KEY"
-		else
-			API_KEY_VALUE="${OPENAI_API_KEY:-}"
-		fi
-		if [[ -n "$API_KEY_VALUE" ]]; then
-			cat > "$CODEX_HOME_DIR/auth.json" <<EOF
+    if [[ "$BILLING_MODE" == "api" && -n "$ACTIVE_API_KEY" ]]; then
+        cat > "$CODEX_HOME_DIR/auth.json" <<EOF
 {
-  "OPENAI_API_KEY": "${API_KEY_VALUE}",
+  "OPENAI_API_KEY": "${ACTIVE_API_KEY}",
   "tokens": null,
   "last_refresh": null
 }
 EOF
-			echo "[run] Created auth.json with API key for Codex"
-		fi
+        echo "[run] Created auth.json with API key for Codex"
     fi
     cp -f "$CODEX_HOME_DIR/config.toml" "$RUN_DIR/artifacts/codex-config.host.toml" 2>/dev/null || true
     DOCKER_RUN_OPTS+=( -v "$CODEX_HOME_DIR:/root/.codex" )
@@ -648,19 +562,6 @@ EOF
         grep -v "^$" || true
     EXIT_CODE=${PIPESTATUS[0]}
     END_TIME_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    
-    # Cleanup shim if it was started
-    if [[ -f /tmp/oneshot_shim_pid.txt ]]; then
-        SHIM_PID=$(cat /tmp/oneshot_shim_pid.txt)
-        if kill -0 "${SHIM_PID}" 2>/dev/null; then
-            echo "[shim] Stopping shim (PID: ${SHIM_PID})"
-            kill "${SHIM_PID}" 2>/dev/null || true
-            sleep 1
-            kill -9 "${SHIM_PID}" 2>/dev/null || true
-        fi
-        rm -f /tmp/oneshot_shim_pid.txt
-    fi
-
     # Copy container artifacts/logs and ensure canonical diff.patch
     if docker ps -a -q -f name="$CONTAINER_NAME" | grep -q .; then
         docker cp "$CONTAINER_NAME:/app/artifacts/." "$RUN_DIR/artifacts/" 2>/dev/null || true
@@ -696,7 +597,7 @@ EOF
     fi
 
     # Run evaluation and print scoring results
-    if [[ -f "$TASK_PATH_INPUT/tb_meta.json" ]]; then
+    if [[ -f "$TASK_PATH_INPUT/tb_meta.json" && "${SKIP_EVAL:-0}" != "1" ]]; then
         echo "========================================"
         echo "SCORING RESULTS:"
         echo "========================================"
@@ -708,6 +609,8 @@ EOF
             echo "⚠️  Evaluation failed (check logs above for details)"
             echo ""
         fi
+    elif [[ "${SKIP_EVAL:-0}" == "1" ]]; then
+        echo "[run] Skipping evaluation (SKIP_EVAL=1)"
     fi
 fi
 
