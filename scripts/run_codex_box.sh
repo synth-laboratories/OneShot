@@ -8,13 +8,92 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/common.sh"
 source "$SCRIPT_DIR/synth_models.sh"
 
-# Load secrets from .env if present
-if [[ -f "${REPO_ROOT}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${REPO_ROOT}/.env"
-  set +a
-fi
+# Function to validate API key format
+validate_api_key_format() {
+  local key="$1"
+  local key_type="$2"  # "openai" or "synth"
+  
+  if [[ -z "$key" ]]; then
+    return 1
+  fi
+  
+  if [[ "$key_type" == "synth" ]]; then
+    if [[ "$key" =~ ^sk-synth- ]] || [[ "$key" =~ ^sk_live_ ]]; then
+      return 0
+    else
+      echo "Warning: SYNTH_API_KEY should start with 'sk-synth-' or 'sk_live_'" >&2
+      return 1
+    fi
+  else
+    # For OpenAI keys, REJECT OpenRouter keys (sk-or-v1-...)
+    if [[ "$key" =~ ^sk-or-v1- ]]; then
+      echo "Error: OpenRouter keys (sk-or-v1-...) are not supported. Use a real OpenAI API key (sk-...)." >&2
+      return 1
+    fi
+    # Must be a real OpenAI key (sk-... but NOT sk-or-v1-...)
+    if [[ "$key" =~ ^sk- ]]; then
+      return 0
+    else
+      echo "Warning: OPENAI_API_KEY should start with 'sk-' (not OpenRouter's sk-or-v1-...)" >&2
+      return 1
+    fi
+  fi
+}
+
+# Function to validate API key by making a test request
+validate_api_key_validity() {
+  local key="$1"
+  local base_url="${2:-https://api.openai.com/v1}"
+  
+  if [[ -z "$key" ]]; then
+    return 1
+  fi
+  
+  # Skip validation if curl is not available
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "[auth] Warning: curl not found, skipping API key validation" >&2
+    return 0
+  fi
+  
+  # Normalize base_url - ensure it ends with /v1 or similar, or add /v1
+  local test_url="${base_url}"
+  if [[ ! "$test_url" =~ /v[0-9]+$ ]] && [[ ! "$test_url" =~ /models$ ]] && [[ ! "$test_url" =~ /chat$ ]]; then
+    # If base_url doesn't end with a version or endpoint, try /v1/models
+    if [[ "$test_url" =~ /$ ]]; then
+      test_url="${test_url}v1/models"
+    else
+      test_url="${test_url}/v1/models"
+    fi
+  elif [[ "$test_url" =~ /v[0-9]+$ ]]; then
+    # If it ends with /v1, add /models
+    test_url="${test_url}/models"
+  fi
+  
+  # Make a minimal test request to validate the key
+  local response
+  response=$(curl -s -w "\n%{http_code}" \
+    -H "Authorization: Bearer $key" \
+    -H "Content-Type: application/json" \
+    "$test_url" \
+    --max-time 5 2>/dev/null || echo -e "\n000")
+  
+  local http_code
+  http_code=$(echo "$response" | tail -n1)
+  
+  if [[ "$http_code" == "200" ]]; then
+    echo "[auth] API key validation successful"
+    return 0
+  elif [[ "$http_code" == "401" ]]; then
+    echo "[auth] Error: API key is invalid (401 Unauthorized)" >&2
+    return 1
+  elif [[ "$http_code" == "000" ]]; then
+    echo "[auth] Warning: Could not reach API endpoint at $test_url, skipping validation" >&2
+    return 0
+  else
+    echo "[auth] Warning: API key validation returned HTTP $http_code for $test_url, proceeding anyway" >&2
+    return 0
+  fi
+}
 
 RUN_ID="${RUN_ID:-$(date +%Y%m%d__%H-%M-%S)}"
 RUN_DIR="${REPO_ROOT}/data/runs/${RUN_ID}"
@@ -34,6 +113,32 @@ if [[ "${TASK_PATH_INPUT}" != /* ]]; then
     TASK_PATH_INPUT="${REPO_ROOT}/${TASK_PATH_INPUT}"
 fi
 echo "[run_codex_box] Task path: ${TASK_PATH_INPUT}"
+
+# Load secrets from .env files (check multiple locations)
+# Priority: task directory > repo root > current directory
+ENV_LOADED=false
+if [[ -f "${TASK_PATH_INPUT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${TASK_PATH_INPUT}/.env"
+  set +a
+  ENV_LOADED=true
+  echo "[env] Loaded .env from task directory: ${TASK_PATH_INPUT}/.env"
+elif [[ -f "${REPO_ROOT}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${REPO_ROOT}/.env"
+  set +a
+  ENV_LOADED=true
+  echo "[env] Loaded .env from repo root: ${REPO_ROOT}/.env"
+elif [[ -f ".env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source ".env"
+  set +a
+  ENV_LOADED=true
+  echo "[env] Loaded .env from current directory: $(pwd)/.env"
+fi
 
 # If pointing at a generated task, convert it to a created task first
 GEN_PREFIX="${REPO_ROOT}/data/tasks/generated/"
@@ -66,6 +171,15 @@ if [[ "${TASK_PATH_INPUT}" == ${GEN_PREFIX}* ]]; then
 
     TASK_PATH_INPUT="${CREATED_DIR}"
     echo "Created task at: ${TASK_PATH_INPUT}"
+    # Reload .env from new task location if it exists
+    if [[ -f "${TASK_PATH_INPUT}/.env" && "$ENV_LOADED" != "true" ]]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "${TASK_PATH_INPUT}/.env"
+        set +a
+        ENV_LOADED=true
+        echo "[env] Reloaded .env from converted task directory: ${TASK_PATH_INPUT}/.env"
+    fi
 fi
 
 # Auto-prepare created tasks to prepared if needed
@@ -86,6 +200,15 @@ if [[ -f "$TASK_PATH_INPUT/tb_meta.json" && ! -f "$TASK_PATH_INPUT/Dockerfile" ]
     if [[ -d "$PREPARED_DIR" ]]; then
         TASK_PATH_INPUT="$PREPARED_DIR"
         echo "Prepared task at: $TASK_PATH_INPUT"
+        # Reload .env from prepared task location if it exists
+        if [[ -f "${TASK_PATH_INPUT}/.env" && "$ENV_LOADED" != "true" ]]; then
+            set -a
+            # shellcheck disable=SC1090
+            source "${TASK_PATH_INPUT}/.env"
+            set +a
+            ENV_LOADED=true
+            echo "[env] Reloaded .env from prepared task directory: ${TASK_PATH_INPUT}/.env"
+        fi
     fi
 fi
 
@@ -195,22 +318,122 @@ if [[ "$BILLING_MODE" == "api" ]]; then
     IS_SYNTH_MODEL=false
     if is_synth_model "$MODEL_ENV"; then
         IS_SYNTH_MODEL=true
-        SYNTH_BASE_URL="${SYNTH_BASE_URL:-$(get_default_synth_base_url)}"
+        # Use SYNTH_BASE_URL from environment if set, otherwise use default
+        if [[ -z "${SYNTH_BASE_URL:-}" ]]; then
+            SYNTH_BASE_URL="$(get_default_synth_base_url)"
+        fi
         export SYNTH_BASE_URL
         if [[ -z "${SYNTH_API_KEY:-}" ]]; then
             echo "Error: OPENAI_MODEL=${MODEL_ENV} requires SYNTH_API_KEY (not found in environment)." >&2
-            echo "Set SYNTH_API_KEY in ${REPO_ROOT}/.env or export it before running this script." >&2
+            echo "Checked for .env files in:" >&2
+            echo "  - ${TASK_PATH_INPUT}/.env" >&2
+            echo "  - ${REPO_ROOT}/.env" >&2
+            echo "  - $(pwd)/.env" >&2
+            echo "Set SYNTH_API_KEY in one of these .env files or export it before running this script." >&2
+            exit 1
+        fi
+        # Detect mangled SYNTH_API_KEY (e.g., if .env has no newline between SYNTH_API_KEY and OPENAI_API_KEY)
+        if [[ ${#SYNTH_API_KEY} -gt 100 ]] || [[ "$SYNTH_API_KEY" =~ OPENAI_API_KEY= ]]; then
+            # Find which .env file has the issue
+            ENV_FILE=""
+            if [[ -f "${TASK_PATH_INPUT}/.env" ]] && grep -q "^SYNTH_API_KEY=" "${TASK_PATH_INPUT}/.env" 2>/dev/null; then
+                ENV_FILE="${TASK_PATH_INPUT}/.env"
+            elif [[ -f "${REPO_ROOT}/.env" ]] && grep -q "^SYNTH_API_KEY=" "${REPO_ROOT}/.env" 2>/dev/null; then
+                ENV_FILE="${REPO_ROOT}/.env"
+            elif [[ -f ".env" ]] && grep -q "^SYNTH_API_KEY=" ".env" 2>/dev/null; then
+                ENV_FILE="$(pwd)/.env"
+            fi
+            echo "Error: SYNTH_API_KEY is mangled (length: ${#SYNTH_API_KEY})." >&2
+            echo "This usually happens when .env has no newline between SYNTH_API_KEY=... and OPENAI_API_KEY=..." >&2
+            if [[ -n "$ENV_FILE" ]]; then
+                echo "Fix the .env file at: $ENV_FILE" >&2
+                echo "Make sure SYNTH_API_KEY=... and OPENAI_API_KEY=... are on separate lines." >&2
+            else
+                echo "Check your .env files for mangled SYNTH_API_KEY values." >&2
+            fi
+            exit 1
+        fi
+        # Validate SYNTH_API_KEY format
+        if ! validate_api_key_format "${SYNTH_API_KEY}" "synth"; then
+            echo "Error: SYNTH_API_KEY format is invalid. Expected format: sk-synth-... or sk_live_..." >&2
             exit 1
         fi
         OPENAI_API_KEY="${SYNTH_API_KEY}"
         export OPENAI_API_KEY
+        # Use SYNTH_BASE_URL from environment if set, otherwise fall back to OPENAI_BASE_URL
         OPENAI_BASE_URL="${OPENAI_BASE_URL:-$SYNTH_BASE_URL}"
         export OPENAI_BASE_URL
+        # Set OPENAI_BASE_URL_VALUE for later use in Docker container
+        OPENAI_BASE_URL_VALUE="${OPENAI_BASE_URL}"
+        export OPENAI_BASE_URL_VALUE
         echo "[synth] Using Synth backend at ${OPENAI_BASE_URL}"
+        # Validate API key validity
+        if ! validate_api_key_validity "${OPENAI_API_KEY}" "${OPENAI_BASE_URL}"; then
+            echo "Error: SYNTH_API_KEY validation failed. Please check your API key." >&2
+            exit 1
+        fi
     else
         if [[ -z "$OPENAI_API_KEY" ]]; then
             echo "Error: billing=api requires OPENAI_API_KEY in the environment." >&2
-            echo "Hint: export OPENAI_API_KEY=sk-... and retry." >&2
+            echo "Checked for .env files in:" >&2
+            echo "  - ${TASK_PATH_INPUT}/.env" >&2
+            echo "  - ${REPO_ROOT}/.env" >&2
+            echo "  - $(pwd)/.env" >&2
+            echo "Set OPENAI_API_KEY in one of these .env files or export it: export OPENAI_API_KEY=sk-..." >&2
+            exit 1
+        fi
+        # Trim whitespace from API key
+        OPENAI_API_KEY=$(echo "$OPENAI_API_KEY" | xargs)
+        
+        # Detect mangled OPENAI_API_KEY (e.g., if .env has no newline between SYNTH_API_KEY and OPENAI_API_KEY)
+        if [[ ${#OPENAI_API_KEY} -gt 200 ]] || [[ "$OPENAI_API_KEY" =~ SYNTH_API_KEY= ]] || [[ "$OPENAI_API_KEY" =~ ^sk_live_.*OPENAI_API_KEY= ]]; then
+            # Find which .env file has the issue
+            ENV_FILE=""
+            if [[ -f "${TASK_PATH_INPUT}/.env" ]] && grep -q "^OPENAI_API_KEY=" "${TASK_PATH_INPUT}/.env" 2>/dev/null; then
+                ENV_FILE="${TASK_PATH_INPUT}/.env"
+            elif [[ -f "${REPO_ROOT}/.env" ]] && grep -q "^OPENAI_API_KEY=" "${REPO_ROOT}/.env" 2>/dev/null; then
+                ENV_FILE="${REPO_ROOT}/.env"
+            elif [[ -f ".env" ]] && grep -q "^OPENAI_API_KEY=" ".env" 2>/dev/null; then
+                ENV_FILE="$(pwd)/.env"
+            fi
+            echo "Error: OPENAI_API_KEY is mangled (length: ${#OPENAI_API_KEY})." >&2
+            echo "This usually happens when .env has no newline between SYNTH_API_KEY=... and OPENAI_API_KEY=..." >&2
+            if [[ -n "$ENV_FILE" ]]; then
+                echo "Fix the .env file at: $ENV_FILE" >&2
+                echo "Make sure SYNTH_API_KEY=... and OPENAI_API_KEY=... are on separate lines." >&2
+            else
+                echo "Check your .env files for mangled OPENAI_API_KEY values." >&2
+            fi
+            exit 1
+        fi
+        
+        # REJECT OpenRouter keys - require real OpenAI keys
+        if [[ "$OPENAI_API_KEY" =~ ^sk-or-v1- ]]; then
+            echo "Error: OpenRouter keys (sk-or-v1-...) are not supported. You must use a real OpenAI API key (sk-...)." >&2
+            echo "Get your OpenAI API key from: https://platform.openai.com/api-keys" >&2
+            echo "Set OPENAI_API_KEY in your .env file with a real OpenAI key." >&2
+            exit 1
+        fi
+        
+        # Validate OPENAI_API_KEY format - must be a real OpenAI key (sk-... but NOT sk-or-v1-...)
+        if ! validate_api_key_format "${OPENAI_API_KEY}" "openai"; then
+            echo "Error: OPENAI_API_KEY format is invalid. Expected format: sk-..." >&2
+            echo "OpenRouter keys (sk-or-v1-...) are not supported. Use a real OpenAI API key." >&2
+            exit 1
+        fi
+        
+        # Debug: show which key we're validating (masked)
+        KEY_PREFIX_DEBUG="${OPENAI_API_KEY:0:10}"
+        KEY_SUFFIX_DEBUG="${OPENAI_API_KEY: -4}"
+        KEY_LEN_DEBUG="${#OPENAI_API_KEY}"
+        echo "[auth] Validating OPENAI_API_KEY: ${KEY_PREFIX_DEBUG}...${KEY_SUFFIX_DEBUG} (length: ${KEY_LEN_DEBUG})"
+        
+        # Validate API key validity - ALWAYS use OpenAI's API for validation
+        if ! validate_api_key_validity "${OPENAI_API_KEY}" "https://api.openai.com/v1"; then
+            echo "Error: OPENAI_API_KEY validation failed. Please check your API key." >&2
+            echo "Validated against https://api.openai.com/v1" >&2
+            echo "Key used: ${KEY_PREFIX_DEBUG}...${KEY_SUFFIX_DEBUG} (length: ${KEY_LEN_DEBUG})" >&2
+            echo "Make sure you're using a real OpenAI API key (not OpenRouter)." >&2
             exit 1
         fi
     fi
@@ -309,7 +532,8 @@ if [[ -d "$TASK_PATH_INPUT" ]]; then
 		if [[ ! -f "$TASK_PATH_INPUT/.env" ]]; then
 			{
 				echo "OPENAI_API_KEY=${OPENAI_API_KEY_VALUE}"
-				if [[ -n "$OPENAI_BASE_URL_VALUE" ]]; then
+				# Only include OPENAI_BASE_URL for synth models, not for OpenAI provider
+				if [[ "$IS_SYNTH_MODEL" == "true" && -n "$OPENAI_BASE_URL_VALUE" ]]; then
 					echo "OPENAI_BASE_URL=${OPENAI_BASE_URL_VALUE}"
 				fi
 				if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
@@ -324,15 +548,70 @@ if [[ -d "$TASK_PATH_INPUT" ]]; then
 					echo "[auth] Appended PRIVATE_GITHUB_PAT to existing .env"
 				fi
 			fi
-			# Ensure API key and base URL entries exist
-			if ! grep -q '^OPENAI_API_KEY=' "$TASK_PATH_INPUT/.env" 2>/dev/null; then
-				echo "OPENAI_API_KEY=${OPENAI_API_KEY_VALUE}" >> "$TASK_PATH_INPUT/.env"
-			fi
-			if [[ -n "$OPENAI_BASE_URL_VALUE" ]]; then
-				if ! grep -q '^OPENAI_BASE_URL=' "$TASK_PATH_INPUT/.env" 2>/dev/null; then
-					echo "OPENAI_BASE_URL=${OPENAI_BASE_URL_VALUE}" >> "$TASK_PATH_INPUT/.env"
+			# Remove OPENAI_BASE_URL from existing .env if using OpenAI provider (not synth)
+			# This prevents OpenRouter from overriding the config file's base_url
+			if [[ "$IS_SYNTH_MODEL" != "true" ]]; then
+				if grep -q '^OPENAI_BASE_URL=' "$TASK_PATH_INPUT/.env" 2>/dev/null; then
+					# Remove OPENAI_BASE_URL line from .env
+					sed -i.bak '/^OPENAI_BASE_URL=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+						sed -i '' '/^OPENAI_BASE_URL=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+						(grep -v '^OPENAI_BASE_URL=' "$TASK_PATH_INPUT/.env" > "$TASK_PATH_INPUT/.env.tmp" && mv "$TASK_PATH_INPUT/.env.tmp" "$TASK_PATH_INPUT/.env")
+					echo "[env] Removed OPENAI_BASE_URL from .env (using OpenAI provider, not OpenRouter)"
 				fi
 			fi
+			# Ensure API key exists - ALWAYS overwrite to prevent mixing keys
+			# Remove existing OPENAI_API_KEY line regardless of model type
+			if grep -q '^OPENAI_API_KEY=' "$TASK_PATH_INPUT/.env" 2>/dev/null; then
+				# Remove existing OPENAI_API_KEY line
+				sed -i.bak '/^OPENAI_API_KEY=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+					sed -i '' '/^OPENAI_API_KEY=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+					(grep -v '^OPENAI_API_KEY=' "$TASK_PATH_INPUT/.env" > "$TASK_PATH_INPUT/.env.tmp" && mv "$TASK_PATH_INPUT/.env.tmp" "$TASK_PATH_INPUT/.env")
+				if [[ "$IS_SYNTH_MODEL" == "true" ]]; then
+					echo "[env] Removed existing OPENAI_API_KEY from .env (replacing with Synth key)"
+				else
+					echo "[env] Removed existing OPENAI_API_KEY from .env (replacing with OpenAI key)"
+				fi
+			fi
+			# Also check for and fix mangled SYNTH_API_KEY lines (SYNTH_API_KEY=...OPENAI_API_KEY=...)
+			if grep -q '^SYNTH_API_KEY=.*OPENAI_API_KEY=' "$TASK_PATH_INPUT/.env" 2>/dev/null; then
+				echo "[env] WARNING: Found mangled SYNTH_API_KEY line in .env, fixing it..."
+				# Extract just the SYNTH_API_KEY value (before OPENAI_API_KEY=)
+				CLEAN_SYNTH_KEY=$(grep '^SYNTH_API_KEY=' "$TASK_PATH_INPUT/.env" | head -1 | sed 's/^SYNTH_API_KEY=//' | sed 's/OPENAI_API_KEY=.*$//' | tr -d '\r\n' | sed 's/[[:space:]]*$//')
+				# Remove the mangled line
+				sed -i.bak '/^SYNTH_API_KEY=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+					sed -i '' '/^SYNTH_API_KEY=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+					(grep -v '^SYNTH_API_KEY=' "$TASK_PATH_INPUT/.env" > "$TASK_PATH_INPUT/.env.tmp" && mv "$TASK_PATH_INPUT/.env.tmp" "$TASK_PATH_INPUT/.env")
+				# Write clean SYNTH_API_KEY if we extracted one
+				if [[ -n "$CLEAN_SYNTH_KEY" ]] && [[ ${#CLEAN_SYNTH_KEY} -lt 100 ]]; then
+					printf 'SYNTH_API_KEY=%s\n' "$CLEAN_SYNTH_KEY" >> "$TASK_PATH_INPUT/.env"
+					echo "[env] Fixed mangled SYNTH_API_KEY line"
+				fi
+			fi
+			# Always add the correct key
+			printf '\nOPENAI_API_KEY=%s\n' "${OPENAI_API_KEY_VALUE}" >> "$TASK_PATH_INPUT/.env"
+			if [[ "$IS_SYNTH_MODEL" == "true" ]]; then
+				echo "[env] Set OPENAI_API_KEY to Synth key in .env"
+			else
+				echo "[env] Set OPENAI_API_KEY to OpenAI key in .env"
+			fi
+			# Only add OPENAI_BASE_URL for synth models - FORCE overwrite to ensure correct URL
+			if [[ "$IS_SYNTH_MODEL" == "true" && -n "$OPENAI_BASE_URL_VALUE" ]]; then
+				if grep -q '^OPENAI_BASE_URL=' "$TASK_PATH_INPUT/.env" 2>/dev/null; then
+					# Remove existing OPENAI_BASE_URL line
+					sed -i.bak '/^OPENAI_BASE_URL=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+						sed -i '' '/^OPENAI_BASE_URL=/d' "$TASK_PATH_INPUT/.env" 2>/dev/null || \
+						(grep -v '^OPENAI_BASE_URL=' "$TASK_PATH_INPUT/.env" > "$TASK_PATH_INPUT/.env.tmp" && mv "$TASK_PATH_INPUT/.env.tmp" "$TASK_PATH_INPUT/.env")
+					echo "[env] Removed existing OPENAI_BASE_URL from .env (replacing with Synth base URL)"
+				fi
+				echo "OPENAI_BASE_URL=${OPENAI_BASE_URL_VALUE}" >> "$TASK_PATH_INPUT/.env"
+				echo "[env] Set OPENAI_BASE_URL to Synth backend in .env"
+			fi
+		fi
+		
+		# Debug: show .env contents (masked) for synth models
+		if [[ "$IS_SYNTH_MODEL" == "true" && -f "$TASK_PATH_INPUT/.env" ]]; then
+			echo "[env] .env file contents (masked):"
+			sed 's/\(OPENAI_API_KEY=\)[^=]*\(.\{4\}\)/\1***\2/g' "$TASK_PATH_INPUT/.env" | sed 's/^/  /'
 		fi
 	fi
 
@@ -436,6 +715,19 @@ if [[ "${REFRESH_PREPARED:-0}" == "1" ]]; then
     fi
 fi
 
+# Always regenerate box_bootstrap.sh from template before building to ensure latest version
+# This updates the file in the build context, so Docker will rebuild just that layer
+# without breaking the cache for other layers
+if [[ -d "$TASK_PATH_INPUT" && -f "$TASK_PATH_INPUT/Dockerfile" ]]; then
+    echo "[bootstrap] Regenerating box_bootstrap.sh from latest template..."
+    export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
+    if uv run python "${REPO_ROOT}/scripts/regenerate_bootstrap.py" "$TASK_PATH_INPUT" 2>/dev/null; then
+        echo "[bootstrap] ✓ Updated box_bootstrap.sh"
+    else
+        echo "[bootstrap] ⚠️  Warning: Failed to regenerate box_bootstrap.sh, using existing version"
+    fi
+fi
+
 # Delegate to existing sandbox runner if present, else run a basic docker build/run
 if [[ -x "${REPO_ROOT}/scripts/run_sandbox.sh" ]]; then
     "${REPO_ROOT}/scripts/run_sandbox.sh" "$TASK_PATH_INPUT" "$RUN_DIR" "$TRACE_DIR" "${@:2}"
@@ -464,18 +756,44 @@ else
 
     OPENAI_MODEL_VALUE="${OPENAI_MODEL:-gpt-5-mini}"
     ACTIVE_API_KEY="${OPENAI_API_KEY:-}"
+    
+    # Ensure OPENAI_API_KEY is set from ACTIVE_API_KEY for Docker
+    if [[ -n "$ACTIVE_API_KEY" ]]; then
+        OPENAI_API_KEY="$ACTIVE_API_KEY"
+    fi
+    
+    # Debug: show API key info (masked)
+    if [[ -n "$ACTIVE_API_KEY" ]]; then
+        KEY_PREFIX="${ACTIVE_API_KEY:0:10}"
+        KEY_SUFFIX="${ACTIVE_API_KEY: -4}"
+        echo "[run] Using API key: ${KEY_PREFIX}...${KEY_SUFFIX} (length: ${#ACTIVE_API_KEY})"
+    else
+        echo "[run] ERROR: ACTIVE_API_KEY is empty! Cannot proceed without API key." >&2
+        exit 1
+    fi
 
     echo "[run] Passing OPENAI_API_KEY to container"
     # Force model for this run unless caller overrides OPENAI_MODEL in env
-    if [[ -n "${OPENAI_BASE_URL_VALUE:-}" ]]; then
+    # For OpenAI provider, explicitly unset OPENAI_BASE_URL to ensure we use the config file's base_url
+    # For synth models, OPENAI_BASE_URL_VALUE will be set and passed through
+    if [[ "$IS_SYNTH_MODEL" == "true" && -n "${OPENAI_BASE_URL_VALUE:-}" ]]; then
         DOCKER_RUN_OPTS+=( -e "OPENAI_BASE_URL=${OPENAI_BASE_URL_VALUE}" )
+        echo "[run] Passing OPENAI_BASE_URL=${OPENAI_BASE_URL_VALUE} to container (Synth model)"
+    elif [[ "$IS_SYNTH_MODEL" != "true" ]]; then
+        # Explicitly unset OPENAI_BASE_URL for OpenAI provider to prevent OpenRouter override
+        DOCKER_RUN_OPTS+=( -e "OPENAI_BASE_URL=" )
+        echo "[run] Unsetting OPENAI_BASE_URL for OpenAI provider"
     fi
     DOCKER_RUN_OPTS+=( -e "OPENAI_MODEL=${OPENAI_MODEL_VALUE:-gpt-5-mini}" )
     # Also pass CODEX_MODEL to align with Codex CLI expectations
     DOCKER_RUN_OPTS+=( -e "CODEX_MODEL=${OPENAI_MODEL_VALUE:-gpt-5-mini}" )
-    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-        DOCKER_RUN_OPTS+=( -e "OPENAI_API_KEY=${OPENAI_API_KEY}" )
-    fi
+    # ALWAYS pass OPENAI_API_KEY - it's required
+    DOCKER_RUN_OPTS+=( -e "OPENAI_API_KEY=${OPENAI_API_KEY}" )
+    # Enable Rust logging and stacktraces for Codex debugging
+    DOCKER_RUN_OPTS+=( -e "RUST_LOG=debug" )
+    DOCKER_RUN_OPTS+=( -e "RUST_BACKTRACE=1" )
+    DOCKER_RUN_OPTS+=( -e "DEBUG=1" )
+    echo "[run] Passing OPENAI_API_KEY to container (masked: ${KEY_PREFIX}...${KEY_SUFFIX})"
     if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
         DOCKER_RUN_OPTS+=( -e "PRIVATE_GITHUB_PAT=${PRIVATE_GITHUB_PAT}" )
         echo "[run] Passing PRIVATE_GITHUB_PAT to container environment"
@@ -483,18 +801,29 @@ else
 
     # Provide a per-run Codex config via bind mount so we don't rely on image-baked config
     MODEL_ENV="${OPENAI_MODEL_VALUE:-${OPENAI_MODEL:-gpt-5-mini}}"
-    if [[ "$MODEL_ENV" == gpt-5-nano* ]]; then
-        REASONING_CONFIG="reasoning_effort = \"medium\""
+    echo "[config] Model: ${MODEL_ENV}"
+    
+    # Determine if reasoning is required for this model
+    # Models that require reasoning: any gpt-5* model, o1, o1-mini, etc.
+    REASONING_REQUIRED=false
+    REASONING_EFFORT="medium"
+    if [[ "$MODEL_ENV" =~ ^gpt-5 ]] || [[ "$MODEL_ENV" =~ ^(o1|o1-mini|o1-preview) ]]; then
+        REASONING_REQUIRED=true
+        echo "[config] ✓ Detected reasoning-required model: ${MODEL_ENV}"
     else
-        REASONING_CONFIG=""
+        echo "[config] Model ${MODEL_ENV} does not require reasoning"
     fi
+    
     CODEX_HOME_DIR="$RUN_DIR/codex_home/.codex"
     mkdir -p "$CODEX_HOME_DIR"
     mkdir -p "$CODEX_HOME_DIR/sessions"
+    
+    # Write base config
     if [[ "$IS_SYNTH_MODEL" == "true" ]]; then
         # Ensure OPENAI_BASE_URL_VALUE is set for synth models
+        # It should already be set earlier, but fallback if not
         if [[ -z "${OPENAI_BASE_URL_VALUE:-}" ]]; then
-            OPENAI_BASE_URL_VALUE="${OPENAI_BASE_URL:-$SYNTH_BASE_URL}"
+            OPENAI_BASE_URL_VALUE="${OPENAI_BASE_URL:-${SYNTH_BASE_URL:-$(get_default_synth_base_url)}}"
         fi
         WIRE_API_VALUE="${WIRE_API:-responses}"
         if [[ "$WIRE_API_VALUE" != "responses" && "$WIRE_API_VALUE" != "chat" ]]; then
@@ -512,26 +841,94 @@ wire_api = "${WIRE_API_VALUE}"
 env_key = "OPENAI_API_KEY"
 EOF
         echo "[run] Using wire_api=${WIRE_API_VALUE}"
+        echo "[config] Codex config.toml for synth model:"
+        cat "$CODEX_HOME_DIR/config.toml" | sed 's/^/  /'
     else
-        printf 'model_provider = "openai"\nmodel = "%s"\n' "$MODEL_ENV" > "$CODEX_HOME_DIR/config.toml"
+        # For OpenAI provider, explicitly set base_url to ensure we use OpenAI directly, not OpenRouter
+        cat > "$CODEX_HOME_DIR/config.toml" <<EOF
+model_provider = "openai"
+model = "${MODEL_ENV}"
+
+[model_providers.openai]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+EOF
     fi
-    if [[ -n "$REASONING_CONFIG" ]]; then
-        printf '%s\n' "$REASONING_CONFIG" >> "$CODEX_HOME_DIR/config.toml"
+    
+    # Always set model_reasoning_effort for models that require it
+    # NOTE: Codex uses model_reasoning_effort (not reasoning_effort) in config.toml
+    # This ensures reasoning is never disabled for models that mandate it
+    if [[ "$REASONING_REQUIRED" == "true" ]]; then
+        # Set both model_reasoning_effort and reasoning_summaries
+        printf 'model_reasoning_effort = "%s"\n' "$REASONING_EFFORT" >> "$CODEX_HOME_DIR/config.toml"
+        printf 'reasoning_summaries = "auto"\n' >> "$CODEX_HOME_DIR/config.toml"
+        echo "[config] ✓ Set model_reasoning_effort=${REASONING_EFFORT} and reasoning_summaries=auto for ${MODEL_ENV} (required)"
+        # Always show config when reasoning is required for debugging
+        echo "[config] Codex config.toml contents:"
+        cat "$CODEX_HOME_DIR/config.toml" | sed 's/^/  /'
+    fi
+    
+    # Debug: show config contents for troubleshooting (if requested)
+    if [[ "${DEBUG_CODEX_CONFIG:-0}" == "1" && "$REASONING_REQUIRED" != "true" ]]; then
+        echo "[config] Codex config.toml contents:"
+        cat "$CODEX_HOME_DIR/config.toml" | sed 's/^/  /'
     fi
     # In API mode, also create auth.json with the API key for Codex
-    if [[ "$BILLING_MODE" == "api" && -n "$ACTIVE_API_KEY" ]]; then
+    if [[ "$BILLING_MODE" == "api" ]]; then
+        if [[ -z "$ACTIVE_API_KEY" ]]; then
+            echo "Error: OPENAI_API_KEY is empty but billing=api. Cannot create auth.json." >&2
+            echo "This should have been caught earlier. Check your .env files or environment." >&2
+            exit 1
+        fi
+        # Double-check format before writing to auth.json
+        if [[ "$IS_SYNTH_MODEL" == "true" ]]; then
+            if ! validate_api_key_format "$ACTIVE_API_KEY" "synth"; then
+                echo "Error: SYNTH_API_KEY format invalid when creating auth.json" >&2
+                exit 1
+            fi
+        else
+            if ! validate_api_key_format "$ACTIVE_API_KEY" "openai"; then
+                echo "Error: OPENAI_API_KEY format invalid when creating auth.json" >&2
+                exit 1
+            fi
+        fi
         cat > "$CODEX_HOME_DIR/auth.json" <<EOF
 {
+  "api_key": "${ACTIVE_API_KEY}",
   "OPENAI_API_KEY": "${ACTIVE_API_KEY}",
   "tokens": null,
   "last_refresh": null
 }
 EOF
         echo "[run] Created auth.json with API key for Codex"
+        # Debug: show auth.json contents (masked)
+        if [[ "${DEBUG_CODEX_CONFIG:-0}" == "1" ]]; then
+            echo "[config] auth.json contents (masked):"
+            sed 's/"\([^"]*sk[^"]*\)[^"]*\([^"]\{4\}\)"/"\1...\2"/g' "$CODEX_HOME_DIR/auth.json" | sed 's/^/  /'
+        fi
     fi
+    # Verify config file exists and is readable
+    if [[ ! -f "$CODEX_HOME_DIR/config.toml" ]]; then
+        echo "Error: Failed to create Codex config.toml" >&2
+        exit 1
+    fi
+    
+    # Verify reasoning is set if required
+    if [[ "$REASONING_REQUIRED" == "true" ]]; then
+        if ! grep -q "model_reasoning_effort" "$CODEX_HOME_DIR/config.toml"; then
+            echo "Error: model_reasoning_effort not found in config.toml for reasoning-required model" >&2
+            exit 1
+        fi
+        if ! grep -q "reasoning_summaries" "$CODEX_HOME_DIR/config.toml"; then
+            echo "Error: reasoning_summaries not found in config.toml for reasoning-required model" >&2
+            exit 1
+        fi
+    fi
+    
     cp -f "$CODEX_HOME_DIR/config.toml" "$RUN_DIR/artifacts/codex-config.host.toml" 2>/dev/null || true
     DOCKER_RUN_OPTS+=( -v "$CODEX_HOME_DIR:/root/.codex" )
     echo "[run] Mounting Codex config with model: $MODEL_ENV"
+    echo "[run] Config directory: $CODEX_HOME_DIR -> /root/.codex"
 
     echo "[run] Starting container..."
     # Sanitize RUN_ID for Docker container name (colons and others -> underscore)
@@ -555,7 +952,11 @@ EOF
 
     # Run container, showing only essential output (suppress verbose Codex logs but show errors)
     # Use a filter to hide verbose Codex telemetry but show actual output
+    # CRITICAL: Capture PIPESTATUS immediately after pipe, before any other commands
+    # Save full logs (including Rust debug output) to artifacts/codex.log and logs/codex_debugging.log
     docker run --name "$CONTAINER_NAME" "${DOCKER_RUN_OPTS[@]}" oneshot-task 2>&1 | \
+        tee "$RUN_DIR/artifacts/codex.log" | \
+        tee "$RUN_DIR/logs/codex_debugging.log" | \
         grep -v "codex_otel::otel_event_manager" | \
         grep -v "INFO codex" | \
         grep -v "^$" || true

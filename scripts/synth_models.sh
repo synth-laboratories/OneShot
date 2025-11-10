@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # List of supported Synth models
-SYNTH_MODELS=("synth-small" "synth-medium")
+SYNTH_MODELS=("synth-small" "synth-medium" "synth-experimental" "synth-experimental-oss" "gpt-oss-120b" "gpt-4o-mini")
 
 # Default Synth base URL (can be overridden by SYNTH_BASE_URL env var)
 SYNTH_DEFAULT_BASE_URL="https://synth-backend-dev-docker.onrender.com/api/synth-research"
@@ -14,5 +14,9 @@ is_synth_model() {
         fi
     done
     return 1 # Not a synth model
+}
+
+get_default_synth_base_url() {
+    echo "${SYNTH_DEFAULT_BASE_URL}"
 }
 
