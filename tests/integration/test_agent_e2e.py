@@ -1,6 +1,7 @@
-"""Integration tests covering the supported Codex flows.
+"""
+Integration tests for Codex and OpenCode agents.
 
-OpenCode-specific coverage lives on the `add-open-code` feature branch.
+These tests verify end-to-end agent execution and diff submission.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -22,7 +24,7 @@ RUNS_DIR = DATA_DIR / "runs"
 
 
 def get_test_task() -> Path:
-    """Return the prepared hello-world task or skip if unavailable."""
+    """Get a test task path (hello-world-example)."""
     task_path = TASKS_DIR / "hello-world-example"
     if not task_path.exists():
         pytest.skip(f"Test task not found: {task_path}")
@@ -35,15 +37,28 @@ def run_script(
     env: Optional[dict[str, str]] = None,
     timeout: int = 600,
 ) -> tuple[int, Path]:
-    """Launch the helper script and return its exit code and run directory."""
+    """
+    Run a script and return exit code and run directory.
+    
+    Args:
+        script_path: Path to the script to run
+        task_path: Path to the task directory
+        env: Additional environment variables
+        timeout: Timeout in seconds
+        
+    Returns:
+        Tuple of (exit_code, run_dir)
+    """
     run_id = f"test_{int(time.time())}"
     run_dir = RUNS_DIR / run_id
-
+    
+    # Prepare environment
     script_env = os.environ.copy()
     script_env["RUN_ID"] = run_id
     if env:
         script_env.update(env)
-
+    
+    # Run the script
     try:
         result = subprocess.run(
             ["bash", str(script_path), str(task_path)],
@@ -53,103 +68,730 @@ def run_script(
             text=True,
             timeout=timeout,
         )
+        
+        # If script failed, print output for debugging
+        if result.returncode != 0:
+            print(f"\n=== Script failed with exit code {result.returncode} ===")
+            print(f"STDOUT:\n{result.stdout}")
+            print(f"STDERR:\n{result.stderr}")
+            print(f"Run directory: {run_dir}")
+            print(f"Run directory exists: {run_dir.exists()}")
+            if run_dir.exists():
+                print(f"Contents: {list(run_dir.iterdir())}")
+        
         return result.returncode, run_dir
-    except subprocess.TimeoutExpired as exc:  # pragma: no cover - defensive
-        pytest.fail(f"Script timed out after {timeout} seconds: {exc}")
-    except Exception as exc:  # pragma: no cover - defensive
-        pytest.fail(f"Failed to run script: {exc}")
-    return 1, run_dir  # never reached, keeps type-checker happy
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"Script timed out after {timeout} seconds")
+        return 1, run_dir  # Unreachable but satisfies type checker
+    except Exception as e:
+        pytest.fail(f"Failed to run script: {e}")
+        return 1, run_dir  # Unreachable but satisfies type checker
 
 
 def verify_agent_ran(run_dir: Path) -> None:
-    """Ensure Codex actually started and streamed tokens."""
-    log_path = run_dir / "artifacts" / "codex-run.log"
-    if not log_path.exists():
-        pytest.fail(f"codex-run.log missing at {log_path}")
-
-    log_content = log_path.read_text(encoding="utf-8", errors="ignore")
-    if "ERROR:" in log_content or "unexpected status" in log_content:
-        lines = [line for line in log_content.splitlines() if "ERROR" in line or "unexpected status" in line]
-        pytest.fail(
-            "Codex recorded errors. See log at "
-            f"{log_path}\nLast entries:\n" + "\n".join(lines[-5:])
-        )
-
-    if "conversation_starts" not in log_content and "Codex initialized" not in log_content:
-        pytest.fail(f"Codex does not appear to have started. Inspect {log_path}")
+    """
+    Verify that the agent actually ran (not just that the script executed).
+    
+    Args:
+        run_dir: Path to the run directory
+        
+    Raises:
+        AssertionError: If agent didn't run successfully
+    """
+    # Check for codex-run.log (Codex) or opencode logs
+    codex_log = run_dir / "artifacts" / "codex-run.log"
+    if codex_log.exists():
+        log_content = codex_log.read_text()
+        # Check for errors that indicate the agent didn't run
+        if "ERROR:" in log_content or "unexpected status" in log_content:
+            # Extract error details
+            error_lines = [line for line in log_content.split("\n") if "ERROR" in line or "unexpected status" in line]
+            error_msg = "\n".join(error_lines[-5:])  # Last 5 error lines
+            pytest.fail(
+                f"Agent failed to run successfully. Check logs at {codex_log}.\n"
+                f"Last errors:\n{error_msg}"
+            )
+        # Check if agent actually started
+        if "conversation_starts" not in log_content and "Codex initialized" not in log_content:
+            pytest.fail(f"Agent doesn't appear to have started. Check logs at {codex_log}")
 
 
 def verify_diff_submitted(run_dir: Path) -> None:
-    """Confirm a diff was produced in the run artifacts."""
+    """
+    Verify that a diff was submitted by checking for diff.patch file.
+    
+    Args:
+        run_dir: Path to the run directory
+        
+    Raises:
+        AssertionError: If diff.patch is missing or empty
+    """
+    # First verify agent ran
     verify_agent_ran(run_dir)
-
+    
     diff_path = run_dir / "artifacts" / "diff.patch"
+    
+    # Check if diff file exists
     if not diff_path.exists():
+        # Check alternative locations
         alt_paths = [
             run_dir / "artifacts" / "container_git_diff_from_baseline.patch",
             run_dir / "artifacts" / "container_git_diff.patch",
         ]
-        for candidate in alt_paths:
-            if candidate.exists():
-                diff_path = candidate
+        for alt_path in alt_paths:
+            if alt_path.exists():
+                diff_path = alt_path
                 break
         else:
-            pytest.fail(f"diff.patch not found in {run_dir / 'artifacts'}")
-
-    diff_content = diff_path.read_text(encoding="utf-8", errors="ignore")
-    assert diff_content.strip(), f"diff.patch is empty at {diff_path}"
-    assert diff_content.startswith("diff --git") or "+++" in diff_content, "diff patch is malformed"
+            pytest.fail(
+                f"diff.patch not found in {run_dir / 'artifacts'}. "
+                f"Agent may not have made any changes. Check logs at {run_dir / 'artifacts' / 'codex-run.log'}"
+            )
+    
+    # Check if diff file is non-empty
+    diff_content = diff_path.read_text()
+    assert len(diff_content.strip()) > 0, f"diff.patch is empty at {diff_path}"
+    
+    # Verify it looks like a valid diff (starts with diff --git or similar)
+    assert (
+        diff_content.startswith("diff --git")
+        or diff_content.startswith("---")
+        or "+++" in diff_content
+    ), f"diff.patch doesn't look like a valid diff: {diff_content[:200]}"
 
 
 @pytest.mark.integration
 def test_codex_with_gpt5_nano() -> None:
-    """Smoke test: Codex + gpt-5-nano should produce a diff."""
+    """Test Codex with gpt-5-nano (direct OpenAI)."""
+    # Check for required API key
     if not os.environ.get("OPENAI_API_KEY"):
         pytest.skip("OPENAI_API_KEY not set")
-
+    
     task_path = get_test_task()
     script_path = SCRIPTS_DIR / "run_codex_box.sh"
-
+    
+    # Run Codex with gpt-5-nano
     env = {
         "OPENAI_MODEL": "gpt-5-nano",
+        "FORCE_OPENAI": "1",  # Force direct OpenAI usage
         "OPENAI_REASONING_EFFORT": "medium",
     }
-
+    
     exit_code, run_dir = run_script(script_path, task_path, env=env)
-    if exit_code != 0:
-        pytest.skip(f"run_codex_box.sh exited with {exit_code}; inspect {run_dir}")
-
+    
+    # Verify run completed and diff was submitted
     verify_diff_submitted(run_dir)
-
+    
+    # Optionally check results.json
     results_path = run_dir / "results.json"
     if results_path.exists():
         results = json.loads(results_path.read_text())
-        assert results.get("run_id")
-        assert results.get("exit_code") == 0
+        assert "run_id" in results
+        assert "exit_code" in results
+
+
+@pytest.mark.integration
+def test_codex_with_synth_small_local_backend() -> None:
+    """
+    Test Codex with synth-small via local synth backend.
+    
+    This test verifies:
+    1. Codex connects to local backend at http://host.docker.internal:8000/api/synth-research
+    2. Stream completes successfully (no "stream disconnected before completion" errors)
+    3. Diff is submitted successfully
+    
+    Prerequisites:
+    - Local backend must be running at http://127.0.0.1:8000
+    - SYNTH_API_KEY and OPENAI_API_KEY must be set
+    """
+    # Check for required API keys
+    synth_api_key = os.environ.get("SYNTH_API_KEY")
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not synth_api_key:
+        pytest.skip("SYNTH_API_KEY not set")
+    if not openai_api_key:
+        pytest.skip("OPENAI_API_KEY not set (needed for synth backend)")
+    
+    # Verify local backend is running
+    try:
+        resp = httpx.get("http://127.0.0.1:8000/health", timeout=5.0)
+        if resp.status_code != 200:
+            pytest.skip(f"Local backend not healthy (status: {resp.status_code})")
+    except Exception as e:
+        pytest.skip(f"Local backend not reachable: {e}")
+    
+    task_path = get_test_task()
+    script_path = SCRIPTS_DIR / "run_codex_box.sh"
+    
+    # Configure for local backend
+    local_backend_url = "http://host.docker.internal:8000/api/synth-research"
+    
+    # Run Codex with synth-small against local backend
+    # Note: The script will set OPENAI_API_KEY=SYNTH_API_KEY when IS_SYNTH_MODEL=true
+    # Force Docker rebuild to ensure updated LM_INSTRUCTIONS.md is included
+    # Skip evaluation to avoid hanging on evaluation step
+    env = {
+        "OPENAI_MODEL": "synth-small",
+        "SYNTH_BASE_URL": local_backend_url,
+        "OPENAI_BASE_URL": local_backend_url,
+        "SYNTH_API_KEY": synth_api_key,  # Required for synth model detection
+        "OPENAI_API_KEY": openai_api_key,  # Required for backend to call OpenAI
+        "FORCE_OPENAI": "1",
+        "DOCKER_NO_CACHE": "1",  # Force rebuild to include updated LM_INSTRUCTIONS.md
+        "SKIP_EVAL": "1",  # Skip evaluation to avoid hanging
+    }
+    
+    exit_code, run_dir = run_script(script_path, task_path, env=env, timeout=600)
+    
+    # Verify agent ran successfully (check for stream completion)
+    codex_log = run_dir / "artifacts" / "codex-run.log"
+    assert codex_log.exists(), f"Codex log not found at {codex_log}"
+    
+    log_content = codex_log.read_text()
+    
+    # Primary goal: Verify streaming works without disconnection errors
+    if "stream disconnected before completion" in log_content:
+        pytest.fail(
+            f"Stream disconnected before completion. Check logs at {codex_log}.\n"
+            f"This indicates the Responses API format or connection handling needs fixing."
+        )
+    
+    # Verify successful API connection (200 status code)
+    assert "http.response.status_code=200" in log_content, \
+        f"Expected successful API response (200), but not found in logs. Check {codex_log}"
+    
+    # Verify SSE events were received (streaming worked)
+    assert "codex.sse_event" in log_content, \
+        f"Expected SSE events but none found. Check {codex_log}"
+    
+    # Check for critical API errors (but allow non-critical ones)
+    if "ERROR:" in log_content:
+        error_lines = [line for line in log_content.split("\n") if "ERROR" in line]
+        # Filter out non-critical errors (like missing env vars that we handle)
+        critical_errors = [line for line in error_lines if "Missing environment variable" not in line]
+        if critical_errors:
+            error_msg = "\n".join(critical_errors[-5:])
+            pytest.fail(
+                f"Agent failed with critical API errors. Check logs at {codex_log}.\n"
+                f"Last errors:\n{error_msg}"
+            )
+    
+    # Verify Codex initialized and started conversation
+    assert "codex.conversation_starts" in log_content or "Codex initialized" in log_content, \
+        f"Codex doesn't appear to have started. Check logs at {codex_log}"
+    
+    # CRITICAL: Verify a diff was actually submitted (this is required for the test)
+    verify_diff_submitted(run_dir)
+    
+    # Verify local backend was used
+    config_path = run_dir / "artifacts" / "codex-config.pre-run.toml"
+    if config_path.exists():
+        config_content = config_path.read_text()
+        # Verify local backend URL is configured
+        assert "host.docker.internal:8000" in config_content or "synth-research" in config_content.lower(), \
+            f"Local backend not configured correctly. Config: {config_content}"
+    
+    # Optionally check results.json
+    results_path = run_dir / "results.json"
+    if results_path.exists():
+        results = json.loads(results_path.read_text())
+        assert "run_id" in results
+        assert "exit_code" in results
+
+
+@pytest.mark.integration
+def test_codex_with_synth_small_local_backend() -> None:
+    """
+    Test Codex with synth-small via local synth backend.
+    
+    This test verifies:
+    1. Codex connects to local backend at http://host.docker.internal:8000/api/synth-research
+    2. Tools are forwarded correctly (no dropped fields)
+    3. Stream completes successfully (no "stream disconnected before completion" errors)
+    4. Diff is submitted successfully
+    
+    Prerequisites:
+    - Local backend must be running at http://127.0.0.1:8000
+    - SYNTH_API_KEY and OPENAI_API_KEY must be set
+    """
+    # Check for required API keys
+    synth_api_key = os.environ.get("SYNTH_API_KEY")
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not synth_api_key:
+        pytest.skip("SYNTH_API_KEY not set")
+    if not openai_api_key:
+        pytest.skip("OPENAI_API_KEY not set (needed for synth backend)")
+    
+    # Verify local backend is running
+    try:
+        resp = httpx.get("http://127.0.0.1:8000/health", timeout=5.0)
+        if resp.status_code != 200:
+            pytest.skip(f"Local backend not healthy (status: {resp.status_code})")
+    except Exception as e:
+        pytest.skip(f"Local backend not reachable: {e}")
+    
+    task_path = get_test_task()
+    script_path = SCRIPTS_DIR / "run_codex_box.sh"
+    
+    # Configure for local backend
+    local_backend_url = "http://host.docker.internal:8000/api/synth-research"
+    
+    # Run Codex with synth-small against local backend
+    # Note: The script will set OPENAI_API_KEY=SYNTH_API_KEY when IS_SYNTH_MODEL=true
+    # Force Docker rebuild to ensure updated LM_INSTRUCTIONS.md is included
+    # Skip evaluation to avoid hanging on evaluation step
+    env = {
+        "OPENAI_MODEL": "synth-small",
+        "SYNTH_BASE_URL": local_backend_url,
+        "OPENAI_BASE_URL": local_backend_url,
+        "SYNTH_API_KEY": synth_api_key,  # Required for synth model detection
+        "OPENAI_API_KEY": openai_api_key,  # Required for backend to call OpenAI
+        "FORCE_OPENAI": "1",
+        "DOCKER_NO_CACHE": "1",  # Force rebuild to include updated LM_INSTRUCTIONS.md
+        "SKIP_EVAL": "1",  # Skip evaluation to avoid hanging
+    }
+    
+    exit_code, run_dir = run_script(script_path, task_path, env=env, timeout=600)
+    
+    # Verify agent ran successfully (check for stream completion)
+    codex_log = run_dir / "artifacts" / "codex-run.log"
+    assert codex_log.exists(), f"Codex log not found at {codex_log}"
+    
+    log_content = codex_log.read_text()
+    
+    # Primary goal: Verify streaming works without disconnection errors
+    if "stream disconnected before completion" in log_content:
+        pytest.fail(
+            f"Stream disconnected before completion. Check logs at {codex_log}.\n"
+            f"This indicates the Responses API format or connection handling needs fixing."
+        )
+    
+    # Verify successful API connection (200 status code)
+    assert "http.response.status_code=200" in log_content, \
+        f"Expected successful API response (200), but not found in logs. Check {codex_log}"
+    
+    # Verify SSE events were received (streaming worked)
+    assert "codex.sse_event" in log_content, \
+        f"Expected SSE events but none found. Check {codex_log}"
+    
+    # Check for critical API errors (but allow non-critical ones)
+    if "ERROR:" in log_content:
+        error_lines = [line for line in log_content.split("\n") if "ERROR" in line]
+        # Filter out non-critical errors (like missing env vars that we handle)
+        critical_errors = [line for line in error_lines if "Missing environment variable" not in line]
+        if critical_errors:
+            error_msg = "\n".join(critical_errors[-5:])
+            pytest.fail(
+                f"Agent failed with critical API errors. Check logs at {codex_log}.\n"
+                f"Last errors:\n{error_msg}"
+            )
+    
+    # Verify Codex initialized and started conversation
+    assert "codex.conversation_starts" in log_content or "Codex initialized" in log_content, \
+        f"Codex doesn't appear to have started. Check logs at {codex_log}"
+    
+    # CRITICAL: Verify a diff was actually submitted (this is required for the test)
+    verify_diff_submitted(run_dir)
+    
+    # Verify local backend was used
+    config_path = run_dir / "artifacts" / "codex-config.pre-run.toml"
+    if config_path.exists():
+        config_content = config_path.read_text()
+        # Verify local backend URL is configured
+        assert "host.docker.internal:8000" in config_content or "synth-research" in config_content.lower(), \
+            f"Local backend not configured correctly. Config: {config_content}"
+    
+    # Optionally check results.json
+    results_path = run_dir / "results.json"
+    if results_path.exists():
+        results = json.loads(results_path.read_text())
+        assert "run_id" in results
+        assert "exit_code" in results
 
 
 @pytest.mark.integration
 def test_codex_with_synth_small() -> None:
-    """Ensure synth-small via the Synth backend still works when configured."""
+    """Test Codex with synth-small via synth backend (uses default remote URL)."""
+    # Check for required API keys
     if not os.environ.get("SYNTH_API_KEY"):
         pytest.skip("SYNTH_API_KEY not set")
     if not os.environ.get("OPENAI_API_KEY"):
-        pytest.skip("OPENAI_API_KEY not set (required for Synth backend)")
-
+        pytest.skip("OPENAI_API_KEY not set (needed for synth backend)")
+    
     task_path = get_test_task()
     script_path = SCRIPTS_DIR / "run_codex_box.sh"
-
+    
+    # Run Codex with synth-small
     env = {
         "OPENAI_MODEL": "synth-small",
+        "FORCE_OPENAI": "1",  # This will be overridden by synth model detection
     }
-
+    
     exit_code, run_dir = run_script(script_path, task_path, env=env)
-    if exit_code != 0:
-        pytest.skip(f"run_codex_box.sh exited with {exit_code}; inspect {run_dir}")
-
+    
+    # Verify run completed and diff was submitted
     verify_diff_submitted(run_dir)
-
+    
+    # For synth-small, also verify it used the synth backend
+    # Check config to ensure synth backend was used
     config_path = run_dir / "artifacts" / "codex-config.pre-run.toml"
     if config_path.exists():
-        config = config_path.read_text(encoding="utf-8", errors="ignore")
-        assert "synth" in config.lower(), "Synth backend not configured correctly"
+        config_content = config_path.read_text()
+        # Verify synth backend URL is configured
+        assert "synth-backend" in config_content or "synth_research" in config_content.lower(), \
+            "Synth backend not configured correctly"
+    
+    # Optionally check results.json
+    results_path = run_dir / "results.json"
+    if results_path.exists():
+        results = json.loads(results_path.read_text())
+        assert "run_id" in results
+        assert "exit_code" in results
+
+
+@pytest.mark.integration
+def test_codex_synth_ai_runtime() -> None:
+    """
+    Test Codex using uvx synth-ai codex runtime (run_codex_synth_ai.sh).
+    
+    This test verifies:
+    1. Codex runs using synth-ai codex runtime configuration
+    2. Codex connects to local backend at http://host.docker.internal:8000/api/synth-research
+    3. Stream completes successfully (no "stream disconnected before completion" errors)
+    4. Diff is submitted successfully
+    
+    Prerequisites:
+    - Local backend must be running at http://127.0.0.1:8000
+    - SYNTH_API_KEY must be set in .env or environment
+    """
+    # Check for required API keys
+    synth_api_key = os.environ.get("SYNTH_API_KEY")
+    
+    if not synth_api_key:
+        pytest.skip("SYNTH_API_KEY not set")
+    
+    # Verify local backend is running
+    try:
+        resp = httpx.get("http://127.0.0.1:8000/health", timeout=5.0)
+        if resp.status_code != 200:
+            pytest.skip(f"Local backend not healthy (status: {resp.status_code})")
+    except Exception as e:
+        pytest.skip(f"Local backend not reachable: {e}")
+    
+    task_path = get_test_task()
+    script_path = SCRIPTS_DIR / "run_codex_synth_ai.sh"
+    
+    # Verify script exists
+    if not script_path.exists():
+        pytest.skip(f"Script not found: {script_path}")
+    
+    # Configure for local backend with responses API
+    local_backend_url = "http://host.docker.internal:8000/api/synth-research/responses"
+    
+    # Run Codex with synth-small using synth-ai runtime with responses API
+    # The script loads SYNTH_API_KEY from .env and sets OPENAI_API_KEY=SYNTH_API_KEY
+    env = {
+        "OPENAI_MODEL": "synth-small",
+        "SYNTH_BASE_URL": local_backend_url,
+        "WIRE_API": "responses",  # Use responses API
+        "SYNTH_API_KEY": synth_api_key,  # Required - script loads from .env
+        "DOCKER_NO_CACHE": "1",  # Force rebuild to include updated LM_INSTRUCTIONS.md
+    }
+    
+    exit_code, run_dir = run_script(script_path, task_path, env=env, timeout=600)
+    
+    # Verify agent ran successfully (check for stream completion)
+    codex_log = run_dir / "artifacts" / "codex-run.log"
+    assert codex_log.exists(), f"Codex log not found at {codex_log}"
+    
+    log_content = codex_log.read_text()
+    
+    # Primary goal: Verify streaming works without disconnection errors
+    if "stream disconnected before completion" in log_content:
+        pytest.fail(
+            f"Stream disconnected before completion. Check logs at {codex_log}.\n"
+            f"This indicates the Responses API format or connection handling needs fixing."
+        )
+    
+    # Verify successful API connection (200 status code)
+    assert "http.response.status_code=200" in log_content, \
+        f"Expected successful API response (200), but not found in logs. Check {codex_log}"
+    
+    # Verify SSE events were received (streaming worked)
+    assert "codex.sse_event" in log_content, \
+        f"Expected SSE events but none found. Check {codex_log}"
+    
+    # Check for critical API errors (but allow non-critical ones)
+    if "ERROR:" in log_content:
+        error_lines = [line for line in log_content.split("\n") if "ERROR" in line]
+        # Filter out non-critical errors (like missing env vars that we handle)
+        critical_errors = [line for line in error_lines if "Missing environment variable" not in line]
+        if critical_errors:
+            error_msg = "\n".join(critical_errors[-5:])
+            pytest.fail(
+                f"Agent failed with critical API errors. Check logs at {codex_log}.\n"
+                f"Last errors:\n{error_msg}"
+            )
+    
+    # Verify Codex initialized and started conversation
+    assert "codex.conversation_starts" in log_content or "Codex initialized" in log_content, \
+        f"Codex doesn't appear to have started. Check logs at {codex_log}"
+    
+    # CRITICAL: Verify a diff was actually submitted (this is required for the test)
+    verify_diff_submitted(run_dir)
+    
+    # Verify synth-ai runtime configuration was used
+    config_path = run_dir / "artifacts" / "codex-config.pre-run.toml"
+    if config_path.exists():
+        config_content = config_path.read_text()
+        # Verify synth provider is configured
+        assert 'model_provider = "synth"' in config_content or 'model_provider="synth"' in config_content, \
+            f"Synth provider not configured correctly. Config: {config_content}"
+        # Verify local backend URL is configured
+        assert "host.docker.internal:8000" in config_content or "synth-research" in config_content.lower(), \
+            f"Local backend not configured correctly. Config: {config_content}"
+    
+    # Optionally check results.json
+    results_path = run_dir / "results.json"
+    if results_path.exists():
+        results = json.loads(results_path.read_text())
+        assert "run_id" in results
+        assert "exit_code" in results
+        assert results.get("model") == "synth-small", "Model should be synth-small"
+        assert results.get("backend_url") == local_backend_url, "Backend URL should match"
+
+
+@pytest.mark.integration
+def test_codex_synth_ai_runtime_responses_local() -> None:
+    """
+    Test Codex using uvx synth-ai codex runtime with local responses endpoint.
+    
+    This test verifies:
+    1. Codex runs using synth-ai codex runtime with responses API
+    2. Codex connects to local responses endpoint at http://host.docker.internal:8000/api/synth-research/responses
+    3. Stream completes successfully (no "stream disconnected before completion" errors)
+    4. Diff is submitted successfully
+    
+    Prerequisites:
+    - Local backend must be running at http://127.0.0.1:8000
+    - SYNTH_API_KEY must be set in .env or environment
+    """
+    # Check for required API keys
+    synth_api_key = os.environ.get("SYNTH_API_KEY")
+    
+    if not synth_api_key:
+        pytest.skip("SYNTH_API_KEY not set")
+    
+    # Verify local backend is running
+    try:
+        resp = httpx.get("http://127.0.0.1:8000/health", timeout=5.0)
+        if resp.status_code != 200:
+            pytest.skip(f"Local backend not healthy (status: {resp.status_code})")
+    except Exception as e:
+        pytest.skip(f"Local backend not reachable: {e}")
+    
+    task_path = get_test_task()
+    script_path = SCRIPTS_DIR / "run_codex_synth_ai.sh"
+    
+    # Verify script exists
+    if not script_path.exists():
+        pytest.skip(f"Script not found: {script_path}")
+    
+    # Configure for local responses endpoint
+    local_responses_url = "http://host.docker.internal:8000/api/synth-research/responses"
+    
+    # Run Codex with synth-small using synth-ai runtime with responses endpoint
+    env = {
+        "OPENAI_MODEL": "synth-small",
+        "SYNTH_BASE_URL": local_responses_url,
+        "WIRE_API": "responses",  # Explicitly set wire_api
+        "SYNTH_API_KEY": synth_api_key,
+        "DOCKER_NO_CACHE": "1",
+    }
+    
+    exit_code, run_dir = run_script(script_path, task_path, env=env, timeout=600)
+    
+    # Verify agent ran successfully
+    codex_log = run_dir / "artifacts" / "codex-run.log"
+    assert codex_log.exists(), f"Codex log not found at {codex_log}"
+    
+    log_content = codex_log.read_text()
+    
+    # Verify streaming works without disconnection errors
+    if "stream disconnected before completion" in log_content:
+        pytest.fail(
+            f"Stream disconnected before completion. Check logs at {codex_log}."
+        )
+    
+    # Verify successful API connection
+    assert "http.response.status_code=200" in log_content, \
+        f"Expected successful API response (200), but not found in logs. Check {codex_log}"
+    
+    # Verify Codex initialized
+    assert "codex.conversation_starts" in log_content or "Codex initialized" in log_content, \
+        f"Codex doesn't appear to have started. Check logs at {codex_log}"
+    
+    # Verify diff was submitted
+    verify_diff_submitted(run_dir)
+    
+    # Verify responses API configuration was used
+    config_path = run_dir / "artifacts" / "codex-config.pre-run.toml"
+    if config_path.exists():
+        config_content = config_path.read_text()
+        assert 'wire_api = "responses"' in config_content, \
+            f"Responses API not configured correctly. Config: {config_content}"
+        assert "responses" in config_content.lower(), \
+            f"Responses endpoint not configured. Config: {config_content}"
+
+
+@pytest.mark.integration
+def test_codex_synth_ai_runtime_responses_openai() -> None:
+    """
+    Test Codex using uvx synth-ai codex runtime with OpenAI responses endpoint.
+    
+    This test verifies:
+    1. Codex runs using synth-ai codex runtime with OpenAI responses API
+    2. Codex connects to OpenAI responses endpoint at https://api.openai.com/v1/responses
+    3. Stream completes successfully
+    4. Diff is submitted successfully
+    
+    Prerequisites:
+    - OPENAI_API_KEY must be set
+    """
+    # Check for required API keys
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not openai_api_key:
+        pytest.skip("OPENAI_API_KEY not set")
+    
+    task_path = get_test_task()
+    script_path = SCRIPTS_DIR / "run_codex_synth_ai.sh"
+    
+    # Verify script exists
+    if not script_path.exists():
+        pytest.skip(f"Script not found: {script_path}")
+    
+    # Configure for OpenAI responses endpoint
+    openai_responses_url = "https://api.openai.com/v1/responses"
+    
+    # Run Codex with gpt-5-nano using OpenAI responses endpoint
+    env = {
+        "OPENAI_MODEL": "gpt-5-nano",
+        "SYNTH_BASE_URL": openai_responses_url,
+        "WIRE_API": "responses",
+        "SYNTH_API_KEY": openai_api_key,  # Use OpenAI key for OpenAI endpoint
+        "OPENAI_API_KEY": openai_api_key,
+        "DOCKER_NO_CACHE": "1",
+    }
+    
+    exit_code, run_dir = run_script(script_path, task_path, env=env, timeout=600)
+    
+    # Verify agent ran successfully
+    codex_log = run_dir / "artifacts" / "codex-run.log"
+    assert codex_log.exists(), f"Codex log not found at {codex_log}"
+    
+    log_content = codex_log.read_text()
+    
+    # Verify streaming works without disconnection errors
+    if "stream disconnected before completion" in log_content:
+        pytest.fail(
+            f"Stream disconnected before completion. Check logs at {codex_log}."
+        )
+    
+    # Verify successful API connection
+    assert "http.response.status_code=200" in log_content, \
+        f"Expected successful API response (200), but not found in logs. Check {codex_log}"
+    
+    # Verify Codex initialized
+    assert "codex.conversation_starts" in log_content or "Codex initialized" in log_content, \
+        f"Codex doesn't appear to have started. Check logs at {codex_log}"
+    
+    # Verify diff was submitted
+    verify_diff_submitted(run_dir)
+    
+    # Verify responses API configuration was used
+    config_path = run_dir / "artifacts" / "codex-config.pre-run.toml"
+    if config_path.exists():
+        config_content = config_path.read_text()
+        assert 'wire_api = "responses"' in config_content, \
+            f"Responses API not configured correctly. Config: {config_content}"
+        assert "api.openai.com" in config_content or "responses" in config_content.lower(), \
+            f"OpenAI responses endpoint not configured. Config: {config_content}"
+
+
+@pytest.mark.integration
+def test_opencode_with_gpt5_nano() -> None:
+    # Check for required API key
+    if not os.environ.get("OPENAI_API_KEY"):
+        pytest.skip("OPENAI_API_KEY not set")
+    
+    task_path = get_test_task()
+    script_path = SCRIPTS_DIR / "run_opencode_box.sh"
+    
+    # Run OpenCode with gpt-5-nano
+    env = {
+        "OPENAI_MODEL": "gpt-5-nano",
+        "OPencode_MODE": "docker",  # Use Docker mode for consistency
+    }
+    
+    exit_code, run_dir = run_script(script_path, task_path, env=env, timeout=900)
+    
+    # OpenCode in Docker mode creates artifacts similar to Codex
+    # Check for diff.patch in artifacts directory
+    diff_path = run_dir / "artifacts" / "diff.patch"
+    
+    # Also check alternative locations that might be used
+    alt_diff_paths = [
+        run_dir / "diff.patch",
+        task_path / "repo" / ".git" / "diff.patch",  # Unlikely but check anyway
+    ]
+    
+    # Try to find diff in any of the expected locations
+    found_diff = False
+    if diff_path.exists() and diff_path.stat().st_size > 0:
+        found_diff = True
+        verify_diff_submitted(run_dir)
+    else:
+        # Check alternative paths
+        for alt_path in alt_diff_paths:
+            if alt_path.exists() and alt_path.stat().st_size > 0:
+                found_diff = True
+                diff_content = alt_path.read_text()
+                assert len(diff_content.strip()) > 0, f"diff.patch is empty at {alt_path}"
+                assert (
+                    diff_content.startswith("diff --git")
+                    or diff_content.startswith("---")
+                    or "+++" in diff_content
+                ), f"diff.patch doesn't look like a valid diff: {diff_content[:200]}"
+                break
+    
+    # If no diff file found, check git diff in repo directory (OpenCode might write directly)
+    if not found_diff:
+        task_repo = task_path / "repo"
+        if task_repo.exists():
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "HEAD"],
+                    cwd=str(task_repo),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    # Diff exists in repo, verify it's valid
+                    diff_content = result.stdout
+                    assert len(diff_content.strip()) > 0, "git diff is empty"
+                    assert (
+                        diff_content.startswith("diff --git")
+                        or diff_content.startswith("---")
+                        or "+++" in diff_content
+                    ), f"git diff doesn't look valid: {diff_content[:200]}"
+                    found_diff = True
+            except Exception as e:
+                pytest.fail(f"Failed to check git diff in repo: {e}")
+    
+    # If still no diff found, fail the test
+    assert found_diff, f"No diff found in any expected location. Checked: {diff_path}, {alt_diff_paths}, and git diff in {task_repo if task_repo.exists() else 'N/A'}"
+

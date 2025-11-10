@@ -444,13 +444,6 @@ else
     # Enable BuildKit for better caching and performance
     export DOCKER_BUILDKIT=1
     BUILD_ARGS=(-t oneshot-task)
-    # Only use --no-cache if explicitly requested
-    if [[ "${DOCKER_NO_CACHE:-0}" == "1" ]]; then
-        BUILD_ARGS+=(--no-cache)
-        echo "[build] Using --no-cache (DOCKER_NO_CACHE=1)"
-    else
-        echo "[build] Using Docker layer caching (set DOCKER_NO_CACHE=1 to disable)"
-    fi
     if [[ -n "${PRIVATE_GITHUB_PAT:-}" ]]; then
         BUILD_ARGS+=(--build-arg "GITHUB_PAT=${PRIVATE_GITHUB_PAT}")
     fi
@@ -503,6 +496,11 @@ else
         if [[ -z "${OPENAI_BASE_URL_VALUE:-}" ]]; then
             OPENAI_BASE_URL_VALUE="${OPENAI_BASE_URL:-$SYNTH_BASE_URL}"
         fi
+        WIRE_API_VALUE="${WIRE_API:-responses}"
+        if [[ "$WIRE_API_VALUE" != "responses" && "$WIRE_API_VALUE" != "chat" ]]; then
+            echo "[config] Unknown WIRE_API='${WIRE_API_VALUE}', defaulting to responses" >&2
+            WIRE_API_VALUE="responses"
+        fi
         cat > "$CODEX_HOME_DIR/config.toml" <<EOF
 model_provider = "myproxy"
 model = "${MODEL_ENV}"
@@ -510,9 +508,10 @@ model = "${MODEL_ENV}"
 [model_providers.myproxy]
 name = "Synth Backend"
 base_url = "${OPENAI_BASE_URL_VALUE}"
-wire_api = "chat"
+wire_api = "${WIRE_API_VALUE}"
 env_key = "OPENAI_API_KEY"
 EOF
+        echo "[run] Using wire_api=${WIRE_API_VALUE}"
     else
         printf 'model_provider = "openai"\nmodel = "%s"\n' "$MODEL_ENV" > "$CODEX_HOME_DIR/config.toml"
     fi

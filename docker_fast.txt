@@ -1,0 +1,64 @@
+Docker build latency diagnosis – `scripts/run_codex_synth_ai.sh`
+================================================================
+
+Context
+-------
+- Command: `bash scripts/run_codex_synth_ai.sh data/tasks/prepared/hello-world-example`
+- Builder: Docker Desktop BuildKit (`docker:desktop-linux`)
+- Image tag: `oneshot-task-synth-ai:latest`
+
+What we observed
+----------------
+1. Cold build takes ~3–4 minutes.
+   * `apt-get install …` layer alone cost ~63 s.
+   * Node/Rust/uv install layer cost ~54 s.
+   * `uv pip install …` adds another ~100 MB filesystem change.
+   * Export/unpack of the image cost ~155 s + 99 s because the final image weighs 3.27 GB (`docker image ls`).
+2. Warm build re-runs in ~1–2 s (`docker build --progress=plain` shows every step `CACHED`), so caching *does* work locally once layers exist.
+3. Any loss of cache (new builder instance, CI, `docker system prune`, Docker Desktop reset) forces us through the 3–4 minute path again because we rebuild the full stack from `ubuntu:24.04`.
+
+Why it still feels slow “most of the time”
+------------------------------------------
+- We always rebuild inside the task directory, so Docker must re-export the 3.27 GB image even when the build uses cache. Exporting/unpacking that much data still costs ~2 min on cold builds.
+- CI runners and fresh laptops start from an empty BuildKit cache, meaning every run pays the full install cost.
+- The Dockerfile layers heavy dependencies *before* task-specific bits. That is good for caching, but the layers are big and few changes can still invalidate them (e.g., tweaking apt install list forces another 2–3 min build).
+- Installing Node, Rust, uv, Python deps and cloning the repo all live in the same image; we never publish or reuse a prebuilt base.
+
+Opportunities to speed things up
+--------------------------------
+1. Introduce a reusable base image.
+   * Create `docker/Dockerfile.codex-base` that performs the expensive steps once:
+     `apt-get install`, Node/Rust/uv install, codex files, `uv pip install`.
+   * Publish/tag locally as `oneshot-codex-base:latest`.
+   * Update task Dockerfiles to start with `FROM oneshot-codex-base` and only copy overlay files plus repo clone.
+   * Result: cold build for tasks downloads a ~3 GB base once, but rebuilds only redo the lightweight layers (repo clone + overlays), cutting build time to seconds on every run.
+2. Persist cache across machines.
+   * Use BuildKit cache export/import (`docker buildx build … --cache-to type=local,mode=max,dest=…`) so CI jobs can warm a cache directory and reuse it between runs.
+   * Alternatively push the base image to a registry so CI pulls it instead of rebuilding.
+3. Use BuildKit cache mounts to avoid repeated downloads.
+   * Example: `RUN --mount=type=cache,target=/var/cache/apt … apt-get install …`
+   * `RUN --mount=type=cache,target=/root/.cache/pip … uv pip install …`
+   * These keep package indexes and wheels around even if the layer has to execute again.
+4. Split giant layers.
+   * Separate Node install, Rust install, and uv install into distinct `RUN` steps so Docker can reuse them independently if only one toolchain changes.
+5. Skip retagging to `docker.io/library`.
+   * We currently tag `docker.io/library/oneshot-task-synth-ai:latest`, which triggers an extra “unpack” on Docker Desktop. Using a local tag (e.g., `oneshot-task-synth-ai:local`) avoids that extra unpack step.
+
+Benchmarking the changes
+------------------------
+- New helper: `python scripts/benchmark_codex_build.py [warm no-cache …]`
+  * `warm` → measures the cached build path.
+  * `no-cache` → times a full rebuild (`docker build --no-cache`) simulating dependency updates.
+  * `pruned` → optional `--allow-prune` flag clears the BuildKit cache first to simulate a brand-new machine.
+- Example:
+  ```
+  python scripts/benchmark_codex_build.py --output-json data/runs/codex-build.json
+  python scripts/benchmark_codex_build.py pruned --allow-prune
+  ```
+- Run the benchmark before and after caching tweaks to quantify improvements. Use the JSON output for automated tracking or dashboards.
+
+Next steps
+----------
+- Draft a `Dockerfile.codex-base`, build it once, and update `Dockerfile` in prepared tasks to inherit from it.
+- Wire up `scripts/run_codex_synth_ai.sh` to build/pull the base when missing instead of recreating the world.
+- Optionally add `--cache-to/--cache-from` flags for CI and enable BuildKit cache mounts for apt/pip to cut network time further.
