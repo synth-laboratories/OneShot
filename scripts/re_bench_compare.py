@@ -152,6 +152,7 @@ RUN apt-get update && apt-get install -y \\
     git \\
     curl \\
     build-essential \\
+    cmake \\
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust (needed for some synth-ai dependencies)
