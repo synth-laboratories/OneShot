@@ -218,3 +218,5 @@ old/.env
 !**/README.MD
 !docs/agents-opencode.md
 !docs/agents-claude-code.md
+logs.txt
+.hf_cache/
