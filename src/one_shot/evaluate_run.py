@@ -14,17 +14,40 @@ from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional
 import shutil
 import asyncio
+import os
+
+# Try to load .env file for API keys
+env_candidates = [
+    Path.cwd() / ".env",
+    Path(__file__).parent.parent.parent / ".env",
+    Path(__file__).parent.parent.parent.parent / ".env",
+    Path(__file__).parent.parent.parent.parent.parent / "synth-ai" / ".env",
+]
+
+try:
+    from dotenv import load_dotenv
+    
+    # Try multiple .env file locations
+    for env_file in env_candidates:
+        if env_file.exists():
+            load_dotenv(env_file, override=False)
+            break
+except ImportError:
+    # python-dotenv not installed, skip
+    pass
 
 # Optional import of structured LM scorer (gpt-5-nano)
 LM_SCORER_AVAILABLE = False
+LM_SCORER_ERROR = None
 try:
     scorer_module_path = (Path(__file__).resolve().parent.parent / "synth_bench" / "evaluation")
     sys.path.append(str(scorer_module_path))
     from lm_rubric_scorer_structured import LMRubricScorerStructured  # type: ignore
     LM_SCORER_AVAILABLE = True
-except Exception as _import_err:
+except Exception as import_err:
     # Will proceed without LM scoring if import fails
     LM_SCORER_AVAILABLE = False
+    LM_SCORER_ERROR = str(import_err)
 
 
 def load_task_metadata(task_dir: Path) -> Dict[str, Any]:
@@ -33,8 +56,13 @@ def load_task_metadata(task_dir: Path) -> Dict[str, Any]:
     if not meta_path.exists():
         raise FileNotFoundError(f"No tb_meta.json found at {meta_path}")
     
-    with open(meta_path) as f:
-        return json.load(f)
+    try:
+        with open(meta_path) as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in {meta_path}: {e}") from e
+    except (OSError, IOError) as e:
+        raise IOError(f"Could not read {meta_path}: {e}") from e
 
 
 def load_run_artifacts(run_dir: Path) -> Dict[str, Any]:
@@ -86,15 +114,16 @@ def load_run_artifacts(run_dir: Path) -> Dict[str, Any]:
         for sf in session_files:
             try:
                 sessions.append(sf.read_text())
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: Could not read session file {sf}: {e}")
         artifacts["codex_sessions_jsonl"] = sessions
     
     return artifacts
 
 
 def compute_agent_metrics(run_dir: Path, artifacts: Dict[str, Any]) -> Dict[str, Any]:
-    """Compute basic agent metrics from codex logs: tokens used and tool calls."""
+    """Compute agent metrics from codex logs: tokens used, tool calls, time, and cost estimates."""
+    
     tokens_total = 0
     tokens_events = 0
     tool_calls_codex_log = 0
@@ -126,12 +155,32 @@ def compute_agent_metrics(run_dir: Path, artifacts: Dict[str, Any]) -> Dict[str,
                 except Exception:
                     continue
 
+    # Calculate time duration from run directory timestamps
+    time_taken_seconds = 0.0
+    try:
+        # Try to get start/end times from run directory
+        start_time = run_dir.stat().st_ctime
+        end_time = run_dir.stat().st_mtime
+        time_taken_seconds = max(0, end_time - start_time)
+    except Exception:
+        pass
+    
+    # Estimate money spent (rough estimate based on tokens)
+    # Assuming gpt-5-nano pricing: ~$0.10 per 1M tokens input, $0.30 per 1M tokens output
+    # Rough estimate: assume 50/50 input/output split
+    money_spent_usd = 0.0
+    if tokens_total > 0:
+        # Very rough estimate: $0.20 per 1M tokens average
+        money_spent_usd = (tokens_total / 1_000_000) * 0.20
+
     return {
         "tokens_total": tokens_total,
         "tokens_events": tokens_events,
         "tool_calls_codex_log": tool_calls_codex_log,
         "tool_calls_sessions": tool_calls_sessions,
         "tool_calls_total": tool_calls_codex_log + tool_calls_sessions,
+        "time_taken_seconds": time_taken_seconds,
+        "money_spent_usd": money_spent_usd,
     }
 
 
@@ -162,8 +211,12 @@ def setup_test_environment(task_meta: Dict, diff_content: str) -> Path:
     print(f"Setting up test environment in {temp_dir}")
     
     # Clone the repository
-    repo_config = task_meta["repo"]
-    git_url = repo_config["git_url"]
+    repo_config = task_meta.get("repo", {})
+    if not repo_config:
+        raise ValueError("Task metadata missing 'repo' configuration")
+    git_url = repo_config.get("git_url")
+    if not git_url:
+        raise ValueError("Task metadata 'repo' missing 'git_url'")
     branch = repo_config.get("branch", "main")
     commit = repo_config.get("start_commit_sha")
     
@@ -226,21 +279,94 @@ def setup_test_environment(task_meta: Dict, diff_content: str) -> Path:
     return repo_dir
 
 
+def load_re_bench_comparison(run_dir: Path) -> Optional[Dict[str, Any]]:
+    """Load re_bench_comparison.json if it exists.
+    
+    Returns comparison data or None if file doesn't exist or is invalid.
+    
+    Args:
+        run_dir: Run directory path
+        
+    Returns:
+        Dictionary with baseline_score, patched_score, score_delta, relative_lift, or None
+    """
+    re_bench_comparison = run_dir / "re_bench_comparison.json"
+    if not re_bench_comparison.exists():
+        return None
+    
+    try:
+        with open(re_bench_comparison) as f:
+            comp_data = json.load(f)
+        
+        # Extract scores from various possible locations in the JSON structure
+        baseline_score = (
+            comp_data.get("baseline", {}).get("mean_outcome_reward") or
+            comp_data.get("comparison", {}).get("baseline_score")
+        )
+        patched_score = (
+            comp_data.get("patched", {}).get("mean_outcome_reward") or
+            comp_data.get("comparison", {}).get("patched_score")
+        )
+        relative_lift = comp_data.get("comparison", {}).get("relative_lift_percent")
+        
+        # Calculate score delta if both scores are available
+        score_delta = None
+        if baseline_score is not None and patched_score is not None:
+            score_delta = patched_score - baseline_score
+        
+        return {
+            "baseline_score": baseline_score,
+            "patched_score": patched_score,
+            "score_delta": score_delta,
+            "relative_lift": relative_lift,
+            "raw_data": comp_data,  # Include raw data for any other fields needed
+        }
+    except (json.JSONDecodeError, OSError, IOError) as e:
+        # Use print instead of logger since logger may not be initialized
+        print(f"Warning: Failed to load re_bench_comparison.json: {e}")
+        return None
+
+
 def run_test_script(repo_dir: Path, test_script: Dict) -> Tuple[bool, str]:
     """Run a single test script and return success status and output."""
     # Write test file
-    test_path = repo_dir / test_script["path"]
+    test_path_str = test_script.get("path")
+    if not test_path_str:
+        return False, "Error: Test script missing 'path' field"
+    
+    # Security: Prevent path traversal attacks
+    test_path = repo_dir / test_path_str
+    try:
+        # Resolve to ensure it's within repo_dir
+        test_path = test_path.resolve()
+        repo_dir_resolved = repo_dir.resolve()
+        # Use is_relative_to() for Python 3.9+ (more robust than string comparison)
+        # Fall back to string comparison for older Python versions
+        try:
+            if not test_path.is_relative_to(repo_dir_resolved):
+                return False, f"Error: Test path '{test_path_str}' attempts to escape repository directory"
+        except AttributeError:
+            # Python < 3.9: use string comparison
+            if not str(test_path).startswith(str(repo_dir_resolved)):
+                return False, f"Error: Test path '{test_path_str}' attempts to escape repository directory"
+    except (ValueError, OSError) as e:
+        return False, f"Error: Invalid test path '{test_path_str}': {e}"
+    
     test_path.parent.mkdir(parents=True, exist_ok=True)
     
-    with open(test_path, "w") as f:
-        f.write(test_script["content"])
+    try:
+        with open(test_path, "w") as f:
+            f.write(test_script.get("content", ""))
+    except (OSError, IOError) as e:
+        return False, f"Error: Could not write test file: {e}"
     
     # Run pytest on the specific test
     result = subprocess.run(
         ["python3", "-m", "pytest", str(test_path), "-v", "--tb=short"],
         cwd=repo_dir,
         capture_output=True,
-        text=True
+        text=True,
+        timeout=60,  # 60 second timeout to prevent hanging
     )
     
     output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
@@ -256,7 +382,11 @@ def generate_markdown_report(
     test_results: Dict[str, Tuple[bool, str]],
     diff_content: str,
     lm_evaluation: Optional[Dict[str, Any]] = None,
-    agent_metrics: Optional[Dict[str, Any]] = None
+    agent_metrics: Optional[Dict[str, Any]] = None,
+    score_delta: Optional[float] = None,
+    baseline_before: Optional[float] = None,
+    baseline_after: Optional[float] = None,
+    relative_lift: Optional[float] = None,
 ) -> None:
     """Generate a markdown report of the evaluation results."""
     report_path = run_dir / "scoring_results.md"
@@ -265,11 +395,13 @@ def generate_markdown_report(
         # Header
         f.write("# 📊 Scoring Results\n\n")
         f.write(f"**Run ID:** `{run_dir.name}`  \n")
-        f.write(f"**Task:** `{task_meta['task_id']}`  \n")
-        f.write(f"**Task Title:** {task_meta['metadata']['title']}  \n")
+        task_id = task_meta.get("task_id", "unknown")
+        task_title = task_meta.get("metadata", {}).get("title", "Unknown")
+        f.write(f"**Task:** `{task_id}`  \n")
+        f.write(f"**Task Title:** {task_title}  \n")
         f.write(f"**Generated:** {Path.cwd().name} evaluation  \n\n")
         
-        # Overall Score (unit-test based)
+        # Overall Score
         score = evaluation["total_score"]
         score_pct = score * 100
         
@@ -285,83 +417,134 @@ def generate_markdown_report(
 
         f.write(f"## {score_emoji} Overall Score: **{score_pct:.0f}%**\n\n")
 
-        # Optional LM Score (separate)
-        if lm_evaluation is not None and isinstance(lm_evaluation.get("weighted_score"), (int, float)):
-            lm_score = float(lm_evaluation["weighted_score"]) * 100
-            lm_filled = int((lm_evaluation["weighted_score"]) * 20)
-            lm_empty = 20 - lm_filled
-            lm_bar = "█" * lm_filled + "░" * lm_empty
-            f.write(f"### 🤖 LM Rubric Overall: **{lm_score:.0f}%**\n\n")
-            f.write("```")
-            f.write(f"\n[{lm_bar}] {lm_score:.1f}%\n")
-            f.write("``" + "\n\n")
-        
-        # Agent metrics
-        if agent_metrics:
-            f.write("\n## 👣 Agent Metrics\n\n")
-            f.write(f"- Token events parsed: {agent_metrics.get('tokens_events', 0)}\\n")
-            f.write(f"- Tokens (sum across events): {agent_metrics.get('tokens_total', 0)}\\n")
-            f.write(f"- Tool calls (codex-run.log): {agent_metrics.get('tool_calls_codex_log', 0)}\\n")
-            f.write(f"- Tool calls (codex-sessions): {agent_metrics.get('tool_calls_sessions', 0)}\\n")
-            f.write(f"- Tool calls (total): {agent_metrics.get('tool_calls_total', 0)}\\n\n")
-
         # Score bar visualization
         filled = int(score * 20)
         empty = 20 - filled
         bar = "█" * filled + "░" * empty
         f.write(f"```\n[{bar}] {score_pct:.1f}%\n```\n\n")
         
-        # Rubric Breakdown (unit tests)
-        f.write("## 📋 Rubric Scores\n\n")
-        f.write("| Rubric | Weight | Score | Tests | Status | Criterion |\n")
-        f.write("|--------|--------|-------|-------|--------|----------|\n")
+        # Scoring Table: Qualitative and Quantitative
+        f.write("## 📊 Scoring Breakdown\n\n")
+        f.write("### Qualitative Scoring (LLM-Based Rubrics)\n\n")
+        f.write("| Rubric | Weight | Score | Status | Criterion |\n")
+        f.write("|--------|--------|-------|--------|----------|\n")
         
-        for rubric_id, rubric_data in evaluation["rubrics"].items():
-            score = rubric_data["score"]
-            weight = rubric_data["weight"]
-            criterion = rubric_data["criterion"]
-            tests_passed = rubric_data.get("tests_passed", 0)
-            test_count = rubric_data.get("test_count", 0)
-            
-            if score is not None:
-                if score >= 1.0:
-                    status = "✅ PASS"
-                elif score >= 0.5:
-                    status = "⚠️ PARTIAL"
-                else:
-                    status = "❌ FAIL"
-                score_str = f"{score:.0%}"
-                test_str = f"{tests_passed}/{test_count}"
-            else:
-                status = "❓ N/A"
-                score_str = "N/A"
-                test_str = "0/0"
-            
-            f.write(f"| `{rubric_id}` | {weight:.0%} | **{score_str}** | {test_str} | {status} | {criterion} |\n")
-
-        # LM Rubric Breakdown (if available)
+        # Use LM evaluation if available, otherwise fall back to test-based evaluation
         if lm_evaluation is not None and lm_evaluation.get("rubric_scores"):
-            f.write("\n## 🤖 LM Rubric Scores\n\n")
-            f.write("| Rubric | LM Score | Reasoning (truncated) |\n")
-            f.write("|--------|----------|------------------------|\n")
             for rs in lm_evaluation["rubric_scores"]:
                 rid = rs.get("rubric_id", "?")
                 rscore = rs.get("score", 0.0)
-                reasoning = (rs.get("reasoning", "") or "").strip().replace("\n", " ")
-                if len(reasoning) > 100:
-                    reasoning = reasoning[:97] + "..."
-                f.write(f"| `{rid}` | {rscore:.0%} | {reasoning} |\n")
+                rweight = next(
+                    (r.get("weight", 0.0) for r in task_meta.get("evaluation", {}).get("rubrics", []) if r.get("id") == rid),
+                    0.0
+                )
+                rcriterion = next(
+                    (r.get("criterion", "Unknown") for r in task_meta.get("evaluation", {}).get("rubrics", []) if r.get("id") == rid),
+                    "Unknown"
+                )
+                
+                if rscore >= 1.0:
+                    status = "✅ PASS"
+                elif rscore >= 0.5:
+                    status = "⚠️ PARTIAL"
+                else:
+                    status = "❌ FAIL"
+                
+                f.write(f"| `{rid}` | {rweight:.0%} | **{rscore:.0%}** | {status} | {rcriterion} |\n")
+        else:
+            # Fallback to test-based rubrics
+            for rubric_id, rubric_data in evaluation["rubrics"].items():
+                score_val = rubric_data["score"]
+                weight = rubric_data["weight"]
+                criterion = rubric_data["criterion"]
+                
+                if score_val is not None:
+                    if score_val >= 1.0:
+                        status = "✅ PASS"
+                    elif score_val >= 0.5:
+                        status = "⚠️ PARTIAL"
+                    else:
+                        status = "❌ FAIL"
+                    score_str = f"{score_val:.0%}"
+                else:
+                    status = "❓ N/A"
+                    score_str = "N/A"
+                
+                f.write(f"| `{rubric_id}` | {weight:.0%} | **{score_str}** | {status} | {criterion} |\n")
         
-        # Test Results
-        f.write("\n## 🧪 Test Results\n\n")
+        # Add baseline score delta row if available
+        if baseline_before is not None and baseline_after is not None:
+            delta_pct = score_delta * 100 if score_delta is not None else (baseline_after - baseline_before) * 100
+            delta_sign = "+" if delta_pct >= 0 else ""
+            lift_str = f" ({relative_lift:.2f}% lift)" if relative_lift is not None else ""
+            
+            if delta_pct > 0:
+                status = "✅ IMPROVED"
+            elif delta_pct < 0:
+                status = "❌ REGRESSED"
+            else:
+                status = "⚖️ NO CHANGE"
+            
+            f.write(f"| `baseline_performance` | - | **{baseline_before:.0%} → {baseline_after:.0%}** ({delta_sign}{delta_pct:.2f}pp{lift_str}) | {status} | Baseline score before vs after patch |\n")
         
-        # Group tests by rubric
-        tests_by_rubric = {}
-        for test_script in task_meta["evaluation"]["test_scripts"]:
-            rubric_id = test_script.get("rubric_id", "unknown")
-            if rubric_id not in tests_by_rubric:
-                tests_by_rubric[rubric_id] = []
-            tests_by_rubric[rubric_id].append(test_script)
+        # Quantitative Metrics
+        f.write("\n### Quantitative Metrics\n\n")
+        f.write("| Metric | Value |\n")
+        f.write("|--------|-------|\n")
+        
+        time_seconds = agent_metrics.get("time_taken_seconds", 0.0) if agent_metrics else 0.0
+        time_minutes = time_seconds / 60.0
+        time_hours = time_seconds / 3600.0
+        if time_hours >= 1:
+            time_str = f"{time_hours:.2f} hours"
+        elif time_minutes >= 1:
+            time_str = f"{time_minutes:.2f} minutes"
+        else:
+            time_str = f"{time_seconds:.2f} seconds"
+        
+        tokens = agent_metrics.get("tokens_total", 0) if agent_metrics else 0
+        money = agent_metrics.get("money_spent_usd", 0.0) if agent_metrics else 0.0
+        tool_calls = agent_metrics.get("tool_calls_total", 0) if agent_metrics else 0
+        
+        f.write(f"| Time Taken | {time_str} |\n")
+        f.write(f"| Tokens Spent | {tokens:,} |\n")
+        f.write(f"| Money Spent | ${money:.4f} USD |\n")
+        f.write(f"| Tool Calls | {tool_calls} |\n")
+        
+        if score_delta is not None:
+            delta_pct = score_delta * 100
+            delta_sign = "+" if score_delta >= 0 else ""
+            f.write(f"| Score Delta (Before → After) | {delta_sign}{delta_pct:.2f} percentage points |\n")
+        else:
+            f.write("| Score Delta (Before → After) | N/A (re_bench_comparison.json not found) |\n")
+        
+        # LM Rubric Details (if available)
+        if lm_evaluation is not None and lm_evaluation.get("rubric_scores"):
+            f.write("\n## 🤖 LLM Rubric Details\n\n")
+            for rs in lm_evaluation["rubric_scores"]:
+                rid = rs.get("rubric_id", "?")
+                rscore = rs.get("score", 0.0)
+                reasoning = rs.get("reasoning", "")
+                evidence = rs.get("evidence", "")
+                
+                f.write(f"### `{rid}` - Score: {rscore:.0%}\n\n")
+                if reasoning:
+                    f.write(f"**Reasoning:** {reasoning[:500]}{'...' if len(reasoning) > 500 else ''}\n\n")
+                if evidence:
+                    f.write(f"**Evidence:** {evidence[:500]}{'...' if len(evidence) > 500 else ''}\n\n")
+        
+        # Test Results (only if test scripts exist)
+        test_scripts = task_meta.get("evaluation", {}).get("test_scripts", [])
+        if test_scripts:
+            f.write("\n## 🧪 Test Results\n\n")
+            
+            # Group tests by rubric
+            tests_by_rubric = {}
+            for test_script in test_scripts:
+                rubric_id = test_script.get("rubric_id", "unknown")
+                if rubric_id not in tests_by_rubric:
+                    tests_by_rubric[rubric_id] = []
+                tests_by_rubric[rubric_id].append(test_script)
         
         for rubric_id in evaluation["rubrics"].keys():
             if rubric_id in tests_by_rubric:
@@ -402,14 +585,15 @@ def generate_markdown_report(
         f.write("## 📝 Test Definitions\n\n")
         f.write("<details>\n<summary>Click to expand test code</summary>\n\n")
         
-        for test_script in task_meta["evaluation"]["test_scripts"]:
-            test_path = test_script["path"]
-            rubric_id = test_script.get("rubric_id", "unknown")
-            
-            f.write(f"### {test_path} (rubric: `{rubric_id}`)\n\n")
-            f.write("```python\n")
-            f.write(test_script["content"])
-            f.write("\n```\n\n")
+        if test_scripts:
+            for test_script in test_scripts:
+                test_path = test_script["path"]
+                rubric_id = test_script.get("rubric_id", "unknown")
+                
+                f.write(f"### {test_path} (rubric: `{rubric_id}`)\n\n")
+                f.write("```python\n")
+                f.write(test_script["content"])
+                f.write("\n```\n\n")
         
         f.write("</details>\n\n")
         
@@ -434,7 +618,8 @@ def generate_markdown_report(
         # Task Instructions
         f.write("## 📄 Task Instructions\n\n")
         f.write("<details>\n<summary>Original task instructions</summary>\n\n")
-        f.write(f"```\n{task_meta['lm']['instructions']}\n```\n\n")
+        lm_instructions = task_meta.get("lm", {}).get("instructions", "N/A")
+        f.write(f"```\n{lm_instructions}\n```\n\n")
         f.write("</details>\n\n")
         
         # Final unified summary table
@@ -467,18 +652,30 @@ def generate_markdown_report(
 
 def evaluate_rubrics(task_meta: Dict, test_results: Dict[str, Tuple[bool, str]]) -> Dict[str, Any]:
     """Evaluate rubrics based on test results."""
-    rubrics = task_meta["evaluation"]["rubrics"]
+    evaluation = task_meta.get("evaluation", {})
+    rubrics = evaluation.get("rubrics", [])
+    test_scripts = evaluation.get("test_scripts", [])
+    
+    if not rubrics:
+        return {
+            "rubrics": {},
+            "total_score": 0,
+            "max_score": 1.0
+        }
+    
     rubric_scores = {}
     
     for rubric in rubrics:
-        rubric_id = rubric["id"]
-        criterion = rubric["criterion"]
-        weight = rubric["weight"]
+        rubric_id = rubric.get("id")
+        if not rubric_id:
+            continue
+        criterion = rubric.get("criterion", "")
+        weight = rubric.get("weight", 0.0)
         
         # Find tests for this rubric
         rubric_tests = [
-            test for test in task_meta["evaluation"]["test_scripts"]
-            if test.get("rubric_id") == rubric_id
+            test for test in test_scripts
+            if test.get("rubric_id") == rubric_id and "path" in test
         ]
         
         if rubric_tests:
@@ -501,7 +698,7 @@ def evaluate_rubrics(task_meta: Dict, test_results: Dict[str, Tuple[bool, str]])
         }
     
     # Calculate total score
-    total_weight = sum(r["weight"] for r in rubrics)
+    total_weight = sum(r.get("weight", 0.0) for r in rubrics)
     earned_weight = sum(
         r["weighted_score"] for r in rubric_scores.values() 
         if r["weighted_score"] is not None
@@ -552,13 +749,24 @@ def main():
 
     # Check if evaluation was already done in container
     container_eval_path = run_dir / "artifacts" / "tb_evaluation_results.json"
+    container_eval = None
     if container_eval_path.exists():
         print("\n✅ Found container evaluation results - using those instead of re-running tests")
         print("=" * 60)
         
-        with open(container_eval_path) as f:
-            container_eval = json.load(f)
-        
+        try:
+            with open(container_eval_path) as f:
+                container_eval = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON in container evaluation results: {e}")
+            print("Falling back to local evaluation...")
+            container_eval = None
+        except (OSError, IOError) as e:
+            print(f"Error: Could not read container evaluation results: {e}")
+            print("Falling back to local evaluation...")
+            container_eval = None
+    
+    if container_eval:
         # Use container's evaluation results
         evaluation = container_eval.get("evaluation", {})
         test_results = {
@@ -584,10 +792,10 @@ def main():
             # Get criterion from task metadata if not in container results
             criterion = rubric_data.get("criterion", "")
             if not criterion:
-                for r in task_meta.get("evaluation", {}).get("rubrics", []):
-                    if r["id"] == rubric_id:
-                        criterion = r["criterion"]
-                        break
+                    for r in task_meta.get("evaluation", {}).get("rubrics", []):
+                        if r.get("id") == rubric_id and "criterion" in r:
+                            criterion = r["criterion"]
+                            break
             tests_passed = rubric_data.get("tests_passed", 0)
             test_count = rubric_data.get("test_count", 0)
             
@@ -604,7 +812,26 @@ def main():
         print("\n" + "=" * 60)
         print(f"FINAL SCORE: {evaluation.get('total_score', 0):.0%}")
         print("=" * 60)
-
+        
+        # Print baseline delta if available
+        comp_data = load_re_bench_comparison(run_dir)
+        if comp_data and comp_data.get("baseline_score") is not None and comp_data.get("patched_score") is not None:
+            baseline_score = comp_data["baseline_score"]
+            patched_score = comp_data["patched_score"]
+            relative_lift = comp_data.get("relative_lift")
+            delta_pct = (patched_score - baseline_score) * 100
+            delta_sign = "+" if delta_pct >= 0 else ""
+            lift_str = f" ({relative_lift:.2f}% lift)" if relative_lift is not None else ""
+            
+            if delta_pct > 0:
+                status_emoji = "✅"
+            elif delta_pct < 0:
+                status_emoji = "❌"
+            else:
+                status_emoji = "⚖️"
+            
+            print(f"\n{status_emoji} Baseline Performance: {baseline_score:.0%} → {patched_score:.0%} ({delta_sign}{delta_pct:.2f}pp{lift_str})")
+        
         # Print agent metrics summary
         if agent_metrics:
             print("\nAgent Metrics:")
@@ -620,14 +847,14 @@ def main():
             for rubric_id, rubric_data in enhanced_evaluation["rubrics"].items():
                 if "criterion" not in rubric_data:
                     for r in task_meta.get("evaluation", {}).get("rubrics", []):
-                        if r["id"] == rubric_id:
+                        if r.get("id") == rubric_id and "criterion" in r:
                             rubric_data["criterion"] = r["criterion"]
                             break
         
         # Prepare results payload
         results_path = run_dir / "evaluation_results.json"
         results_payload: Dict[str, Any] = {
-            "task_id": task_meta["task_id"],
+            "task_id": task_meta.get("task_id", "unknown"),
             "run_id": run_dir.name,
             "evaluation": enhanced_evaluation,
             "test_results": {
@@ -691,6 +918,19 @@ def main():
         
         print(f"\nDetailed results saved to: {results_path}")
         
+        # Get score delta from re_bench comparison if available
+        comp_data = load_re_bench_comparison(run_dir)
+        if comp_data:
+            score_delta = comp_data.get("score_delta")
+            baseline_before = comp_data.get("baseline_score")
+            baseline_after = comp_data.get("patched_score")
+            relative_lift = comp_data.get("relative_lift")
+        else:
+            score_delta = None
+            baseline_before = None
+            baseline_after = None
+            relative_lift = None
+        
         # Generate markdown report (includes LM results if present)
         generate_markdown_report(
             run_dir, 
@@ -699,9 +939,179 @@ def main():
             test_results,
             diff_content,
             lm_evaluation=lm_evaluation_dict,
-            agent_metrics=agent_metrics
+            agent_metrics=agent_metrics,
+            score_delta=score_delta,
+            baseline_before=baseline_before,
+            baseline_after=baseline_after,
+            relative_lift=relative_lift,
         )
         
+        print(f"Markdown report saved to: {run_dir / 'scoring_results.md'}")
+        return
+    
+    # If no container evaluation, check if we should run tests or use LLM-only evaluation
+    test_scripts = task_meta.get("evaluation", {}).get("test_scripts", [])
+    
+    if not test_scripts:
+        print("\nNo deterministic test scripts found - using LLM-based evaluation only")
+        print("=" * 60)
+        
+        # Set up test environment for LLM evaluation
+        repo_dir = None
+        try:
+            repo_dir = setup_test_environment(task_meta, diff_content)
+            print(f"Test environment ready at {repo_dir}")
+            
+            # Run LLM-based rubric scoring (required)
+            print("\nRunning LLM-based rubric scorer (required)...")
+            if not LM_SCORER_AVAILABLE:
+                print("ERROR: LLM scorer not available but required for this task!")
+                if LM_SCORER_ERROR:
+                    print(f"Import error: {LM_SCORER_ERROR}")
+                print("Install the LM scorer module to evaluate this task.")
+                print("Required: pip install openai python-dotenv")
+                sys.exit(1)
+            
+            # Check for API key
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                print("ERROR: OPENAI_API_KEY not found in environment!")
+                print("Please set OPENAI_API_KEY environment variable or add it to a .env file.")
+                print(f"Checked .env files in: {', '.join(str(p) for p in env_candidates if p.exists())}")
+                sys.exit(1)
+            
+            lm_artifacts = collect_repo_artifacts_for_lm(repo_dir)
+            
+            async def _run_lm_eval():
+                scorer = LMRubricScorerStructured(model="gpt-5-nano", temperature=0.1)
+                return await scorer.evaluate_task(task_meta, lm_artifacts)
+            
+            lm_result = asyncio.run(_run_lm_eval())
+            lm_evaluation_dict = {
+                "weighted_score": lm_result.weighted_score,
+                "rubric_scores": [
+                    {
+                        "rubric_id": s.rubric_id,
+                        "score": s.score,
+                        "reasoning": s.reasoning,
+                        "evidence": s.evidence,
+                        "suggestions": getattr(s, "suggestions", None),
+                    }
+                    for s in lm_result.rubric_scores
+                ],
+                "summary": lm_result.summary,
+                "metadata": lm_result.metadata,
+            }
+            
+            # Create evaluation structure from LLM scores
+            evaluation = {
+                "rubrics": {
+                    rs.get("rubric_id", "unknown"): {
+                        "criterion": next(
+                            (r.get("criterion", "Unknown") for r in task_meta.get("evaluation", {}).get("rubrics", []) 
+                             if r.get("id") == rs.get("rubric_id")), 
+                            "Unknown"
+                        ),
+                        "weight": next(
+                            (r.get("weight", 0.0) for r in task_meta.get("evaluation", {}).get("rubrics", []) 
+                             if r.get("id") == rs.get("rubric_id")), 
+                            0.0
+                        ),
+                        "score": rs.get("score", 0.0),
+                        "max_score": 1.0,
+                        "weighted_score": rs.get("score", 0.0) * next(
+                            (r.get("weight", 0.0) for r in task_meta.get("evaluation", {}).get("rubrics", []) 
+                             if r.get("id") == rs.get("rubric_id")), 
+                            0.0
+                        ),
+                    }
+                    for rs in lm_evaluation_dict.get("rubric_scores", [])
+                },
+                "total_score": lm_result.weighted_score,
+                "max_score": 1.0,
+            }
+            
+            test_results = {}
+            
+        finally:
+            if repo_dir is not None:
+                temp_dir = repo_dir.parent
+                if temp_dir.exists() and "tb_eval_" in str(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir)
+                    except Exception as cleanup_err:
+                        print(f"Warning: Could not clean up temp directory {temp_dir}: {cleanup_err}")
+        
+        # Get score delta from re_bench comparison if available (before LLM eval)
+        comp_data = load_re_bench_comparison(run_dir)
+        if comp_data:
+            score_delta = comp_data.get("score_delta")
+            baseline_before = comp_data.get("baseline_score")
+            baseline_after = comp_data.get("patched_score")
+            relative_lift = comp_data.get("relative_lift")
+        else:
+            score_delta = None
+            baseline_before = None
+            baseline_after = None
+            relative_lift = None
+        
+        # Save results
+        results_path = run_dir / "evaluation_results.json"
+        results_payload: Dict[str, Any] = {
+            "task_id": task_meta.get("task_id", "unknown"),
+            "run_id": run_dir.name,
+            "evaluation": evaluation,
+            "test_results": {},
+            "diff_lines": len(diff_content.splitlines()) if diff_content else 0,
+            "agent_metrics": agent_metrics,
+            "lm_evaluation": lm_evaluation_dict,
+            "quantitative_metrics": {
+                "time_taken_seconds": agent_metrics.get("time_taken_seconds", 0.0),
+                "tokens_spent": agent_metrics.get("tokens_total", 0),
+                "money_spent_usd": agent_metrics.get("money_spent_usd", 0.0),
+                "tool_calls": agent_metrics.get("tool_calls_total", 0),
+                "score_delta": score_delta,
+            },
+        }
+        
+        with open(results_path, "w") as f:
+            json.dump(results_payload, f, indent=2)
+        
+        print("\n" + "=" * 60)
+        print(f"FINAL SCORE (LLM-based): {evaluation['total_score']:.1%}")
+        print("=" * 60)
+        
+        # Print baseline delta if available
+        if baseline_before is not None and baseline_after is not None:
+            delta_pct = score_delta * 100 if score_delta is not None else (baseline_after - baseline_before) * 100
+            delta_sign = "+" if delta_pct >= 0 else ""
+            lift_str = f" ({relative_lift:.2f}% lift)" if relative_lift is not None else ""
+            
+            if delta_pct > 0:
+                status_emoji = "✅"
+            elif delta_pct < 0:
+                status_emoji = "❌"
+            else:
+                status_emoji = "⚖️"
+            
+            print(f"\n{status_emoji} Baseline Performance: {baseline_before:.0%} → {baseline_after:.0%} ({delta_sign}{delta_pct:.2f}pp{lift_str})")
+        
+        # Generate markdown report
+        generate_markdown_report(
+            run_dir,
+            task_meta,
+            evaluation,
+            test_results,
+            diff_content,
+            lm_evaluation=lm_evaluation_dict,
+            agent_metrics=agent_metrics,
+            score_delta=score_delta,
+            baseline_before=baseline_before,
+            baseline_after=baseline_after,
+            relative_lift=relative_lift,
+        )
+        
+        print(f"\nDetailed results saved to: {results_path}")
         print(f"Markdown report saved to: {run_dir / 'scoring_results.md'}")
         return
     
@@ -709,6 +1119,7 @@ def main():
     print("\nNo container evaluation found - running tests locally...")
     
     # Set up test environment
+    repo_dir = None
     try:
         repo_dir = setup_test_environment(task_meta, diff_content)
         print(f"Test environment ready at {repo_dir}")
@@ -718,8 +1129,12 @@ def main():
         print("\nRunning tests:")
         print("-" * 40)
         
-        for test_script in task_meta["evaluation"]["test_scripts"]:
-            test_path = test_script["path"]
+        test_scripts = task_meta.get("evaluation", {}).get("test_scripts", [])
+        for test_script in test_scripts:
+            test_path = test_script.get("path")
+            if not test_path:
+                print(f"Warning: Test script missing 'path' field, skipping: {test_script}")
+                continue
             rubric_id = test_script.get("rubric_id", "unknown")
             
             print(f"Running {test_path} (rubric: {rubric_id})...")
@@ -741,12 +1156,12 @@ def main():
         
         evaluation = evaluate_rubrics(task_meta, test_results)
         
-        for rubric_id, rubric_result in evaluation["rubrics"].items():
-            score = rubric_result["score"]
-            weight = rubric_result["weight"]
-            criterion = rubric_result["criterion"]
-            tests_passed = rubric_result["tests_passed"]
-            test_count = rubric_result["test_count"]
+        for rubric_id, rubric_result in evaluation.get("rubrics", {}).items():
+            score = rubric_result.get("score")
+            weight = rubric_result.get("weight", 0.0)
+            criterion = rubric_result.get("criterion", "")
+            tests_passed = rubric_result.get("tests_passed", 0)
+            test_count = rubric_result.get("test_count", 0)
             
             if score is not None:
                 score_str = f"{score:.1%} ({tests_passed}/{test_count} tests)"
@@ -761,7 +1176,26 @@ def main():
         print("\n" + "=" * 60)
         print(f"FINAL SCORE: {evaluation['total_score']:.1%}")
         print("=" * 60)
-
+        
+        # Print baseline delta if available
+        comp_data = load_re_bench_comparison(run_dir)
+        if comp_data and comp_data.get("baseline_score") is not None and comp_data.get("patched_score") is not None:
+            baseline_score = comp_data["baseline_score"]
+            patched_score = comp_data["patched_score"]
+            relative_lift = comp_data.get("relative_lift")
+            delta_pct = (patched_score - baseline_score) * 100
+            delta_sign = "+" if delta_pct >= 0 else ""
+            lift_str = f" ({relative_lift:.2f}% lift)" if relative_lift is not None else ""
+            
+            if delta_pct > 0:
+                status_emoji = "✅"
+            elif delta_pct < 0:
+                status_emoji = "❌"
+            else:
+                status_emoji = "⚖️"
+            
+            print(f"\n{status_emoji} Baseline Performance: {baseline_score:.0%} → {patched_score:.0%} ({delta_sign}{delta_pct:.2f}pp{lift_str})")
+        
         # Print agent metrics summary
         if agent_metrics:
             print("\nAgent Metrics:")
@@ -774,7 +1208,7 @@ def main():
         # Save detailed results
         results_path = run_dir / "evaluation_results.json"
         results_payload: Dict[str, Any] = {
-            "task_id": task_meta["task_id"],
+            "task_id": task_meta.get("task_id", "unknown"),
             "run_id": run_dir.name,
             "evaluation": evaluation,
             "test_results": {
@@ -853,16 +1287,20 @@ def main():
             test_results,
             diff_content,
             lm_evaluation=lm_evaluation_dict,
-            agent_metrics=agent_metrics
+            agent_metrics=agent_metrics,
+            score_delta=None
         )
         
     finally:
         # Clean up temp directory
-        if 'repo_dir' in locals():
+        if repo_dir is not None:
             temp_dir = repo_dir.parent
             if temp_dir.exists() and "tb_eval_" in str(temp_dir):
-                shutil.rmtree(temp_dir)
-                print("\nCleaned up temp directory")
+                try:
+                    shutil.rmtree(temp_dir)
+                    print("\nCleaned up temp directory")
+                except Exception as cleanup_err:
+                    print(f"\nWarning: Could not clean up temp directory {temp_dir}: {cleanup_err}")
 
 
 if __name__ == "__main__":

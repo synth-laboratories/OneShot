@@ -1,5 +1,6 @@
 """
 Minimal mitmproxy addon to capture OpenAI API requests/responses into SQLite.
+Also provides a /health endpoint for checking proxy status.
 
 Database layout (raw):
   data/traces/v3/raw_synth_ai.db/traces.sqlite3 table 'traces' with columns:
@@ -42,7 +43,26 @@ class Tracer:
     def __init__(self) -> None:
         _ensure_db(RAW_DB)
 
+    def request(self, flow: http.HTTPFlow) -> None:  # type: ignore
+        """Handle incoming requests - check for health endpoint"""
+        # Handle health check endpoint
+        if flow.request.path == "/health" and flow.request.host == "localhost":
+            flow.response = http.Response.make(
+                200,
+                b'{"status":"ok","service":"mitmproxy-tracer"}',
+                {"Content-Type": "application/json"}
+            )
+            return
+        
+        # Let other requests pass through normally
+        return
+
     def response(self, flow: http.HTTPFlow) -> None:  # type: ignore
+        """Capture API requests/responses to database"""
+        # Skip health check responses (already handled in request())
+        if flow.request.path == "/health" and flow.request.host == "localhost":
+            return
+            
         try:
             ts_ms = int(time.time() * 1000)
             rid = flow.id

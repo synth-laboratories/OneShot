@@ -68,7 +68,11 @@ class SpecEvaluator:
         return env_vars
 
     def prepare_task_with_overrides(self, task_path: Path, overrides_path: Optional[Path] = None) -> Path:
-        """Prepare a task with overrides applied."""
+        """Prepare a task with overrides applied.
+        
+        Returns a persistent temporary directory path that will not be automatically deleted.
+        The caller is responsible for cleanup if needed.
+        """
         if overrides_path:
             self.overrides_manager = OverridesManager(overrides_path)
 
@@ -78,12 +82,14 @@ class SpecEvaluator:
         task_config = self.load_task_config(task_path)
         self.overrides_manager.apply_overrides(task_config)
 
-        # Create a temporary task directory with overrides
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            prepared_path = temp_path / "prepared_task"
-            prepared_path.mkdir()
+        # Create a persistent temporary directory (not auto-deleted)
+        # Use mkdtemp instead of TemporaryDirectory so it persists after function returns
+        temp_dir = tempfile.mkdtemp(prefix="oneshot_prepared_task_")
+        temp_path = Path(temp_dir)
+        prepared_path = temp_path / "prepared_task"
+        prepared_path.mkdir()
 
+        try:
             # Copy original task
             import shutil
             for item in task_path.iterdir():
@@ -126,6 +132,11 @@ class SpecEvaluator:
                     json.dump(meta, f, indent=2)
 
             return prepared_path
+        except Exception:
+            # Clean up on error
+            import shutil
+            shutil.rmtree(temp_path, ignore_errors=True)
+            raise
 
     def load_task_config(self, task_path: Path) -> Dict[str, Any]:
         """Load task configuration from tb_meta.json."""

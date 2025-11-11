@@ -1,0 +1,7 @@
+preventing it from doing the work we want. it should be doing:
+- finding/creating a task app
+- running an eval
+- deploying the task app
+- running prompt opt against it
+- using top rpomtps and running a second eval
+- submitting

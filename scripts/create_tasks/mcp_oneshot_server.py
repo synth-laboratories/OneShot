@@ -8,7 +8,10 @@ import json
 import sys
 import asyncio
 import logging
-from typing import Dict, Any, List
+import tempfile
+import os
+from pathlib import Path
+from typing import Dict, Any
 
 # Ensure src is on sys.path to import package modules
 from pathlib import Path as _PathForSys
@@ -20,67 +23,178 @@ if str(_SRC_DIR) not in sys.path:
 # Try to import MCP SDK, fall back to JSON-RPC if not available
 try:
     from mcp.server import Server
+    from mcp.server.models import InitializationOptions
     from mcp.server.stdio import stdio_server
+    from mcp.types import ServerCapabilities, TextContent, Tool, ToolsCapability
     HAS_MCP_SDK = True
 except ImportError:
     HAS_MCP_SDK = False
+
+# Use user-specific log directory or temp directory
+_log_dir = Path.home() / ".oneshot" / "logs"
+try:
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _log_file = _log_dir / "mcp_server.out"
+except (OSError, PermissionError):
+    # Fall back to temp directory if home directory is not writable
+    _log_file = Path(tempfile.gettempdir()) / "oneshot_mcp_server.out"
 
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/tmp/oneshot_mcp_server.out'),
+        logging.FileHandler(str(_log_file)),
         logging.StreamHandler(sys.stderr)
     ]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"MCP server log file: {_log_file}")
 
 # Import OneShot implementation from package
 from one_shot.task_creation import OneShotTaskManager, WorktreeReadiness  # noqa: E402
 
 # MCP SDK Implementation (if available)
 if HAS_MCP_SDK:
-    # Initialize the task manager
-    task_manager = OneShotTaskManager()
+    # Initialize the task manager with custom paths from environment if set
+    import os
+    from pathlib import Path
+    base_dir = os.environ.get('ONESHOT_BASE_DIR')
+    tasks_dir = os.environ.get('ONESHOT_TASKS_DIR')
+    task_manager = OneShotTaskManager(
+        base_dir=Path(base_dir) if base_dir else None,
+        tasks_dir=Path(tasks_dir) if tasks_dir else None
+    )
     
     # Create the MCP server
-    mcp = Server("oneshot")
+    server = Server("oneshot")
     
-    @mcp.tool(name="repo_start_task", description="Start a new OneShot task")
-    async def repo_start_task(task_title: str, notes: str = "", labels: List[str] = None) -> str:
-        """Start a new OneShot task"""
-        result = task_manager.start_task(task_title, notes, labels)
-        return json.dumps(result)
+    @server.list_tools()
+    async def list_tools() -> list[Tool]:
+        """List available tools"""
+        return [
+            Tool(
+                name="repo_start_task_v1",
+                description="Start a new OneShot task",
+                inputSchema={
+                    "type": "object",
+                    "required": ["task_title"],
+                    "properties": {
+                        "task_title": {
+                            "type": "string",
+                            "description": "Title of the task"
+                        },
+                        "notes": {
+                            "type": "string",
+                            "description": "Additional notes",
+                            "default": ""
+                        },
+                        "labels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Task labels",
+                            "default": []
+                        }
+                    }
+                }
+            ),
+            Tool(
+                name="repo_end_task_v1",
+                description="End the current OneShot task",
+                inputSchema={
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "Task summary"
+                        },
+                        "labels": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Additional labels",
+                            "default": []
+                        }
+                    }
+                }
+            ),
+            Tool(
+                name="repo_check_readiness_v1",
+                description="Check worktree readiness",
+                inputSchema={
+                    "type": "object",
+                    "properties": {}
+                }
+            ),
+            Tool(
+                name="repo_autofix_readiness_v1",
+                description="Auto-fix worktree issues",
+                inputSchema={
+                    "type": "object",
+                    "properties": {}
+                }
+            )
+        ]
     
-    @mcp.tool(name="repo_end_task", description="End the current OneShot task")
-    async def repo_end_task(summary: str, labels: List[str] = None) -> str:
-        """End the current OneShot task"""
-        result = task_manager.end_task(summary, labels)
-        return json.dumps(result)
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict[str, Any] | None) -> list[TextContent]:
+        """Handle tool calls"""
+        if arguments is None:
+            arguments = {}
+        
+        logger.info(f"Tool call: {name}")
+        logger.debug(f"Arguments: {json.dumps(arguments, indent=2)}")
+        
+        try:
+            if name == "repo_start_task_v1":
+                result = task_manager.start_task(
+                    arguments.get("task_title", ""),
+                    arguments.get("notes", ""),
+                    arguments.get("labels", [])
+                )
+            elif name == "repo_end_task_v1":
+                result = task_manager.end_task(
+                    arguments.get("summary", ""),
+                    arguments.get("labels", [])
+                )
+            elif name == "repo_check_readiness_v1":
+                result = WorktreeReadiness.check_readiness()
+            elif name == "repo_autofix_readiness_v1":
+                result = WorktreeReadiness.autofix_readiness()
+            else:
+                raise ValueError(f"Unknown tool: {name}")
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2)
+            )]
+        except Exception as e:
+            logger.error(f"Tool execution failed: {str(e)}")
+            raise
     
-    @mcp.tool(name="repo_check_readiness", description="Check worktree readiness")
-    async def repo_check_readiness() -> str:
-        """Check worktree readiness"""
-        result = WorktreeReadiness.check_readiness()
-        return json.dumps(result)
-    
-    @mcp.tool(name="repo_autofix_readiness", description="Auto-fix worktree issues")
-    async def repo_autofix_readiness() -> str:
-        """Auto-fix worktree issues"""
-        result = WorktreeReadiness.autofix_readiness()
-        return json.dumps(result)
-    
-    def run_mcp_sdk():
+    async def run_mcp_sdk():
         """Run using MCP SDK"""
         logger.info("Starting MCP server with SDK")
-        asyncio.run(stdio_server(mcp).run())
+        async with stdio_server() as (read_stream, write_stream):
+            init_options = InitializationOptions(
+                server_name="oneshot",
+                server_version="1.0.0",
+                capabilities=ServerCapabilities(tools=ToolsCapability())
+            )
+            await server.run(read_stream, write_stream, init_options)
 
 # JSON-RPC Protocol Implementation (fallback)
 class MCPServer:
     """MCP stdio server implementation using JSON-RPC"""
     
     def __init__(self):
-        self.task_manager = OneShotTaskManager()
+        import os
+        from pathlib import Path
+        base_dir = os.environ.get('ONESHOT_BASE_DIR')
+        tasks_dir = os.environ.get('ONESHOT_TASKS_DIR')
+        self.task_manager = OneShotTaskManager(
+            base_dir=Path(base_dir) if base_dir else None,
+            tasks_dir=Path(tasks_dir) if tasks_dir else None
+        )
         self.version = "1.0.0"
     
     def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -128,7 +242,7 @@ class MCPServer:
         """List available tools"""
         tools = [
             {
-                "name": "repo_start_task",
+                "name": "repo_start_task_v1",
                 "description": "Start a new OneShot task",
                 "inputSchema": {
                     "type": "object",
@@ -141,7 +255,7 @@ class MCPServer:
                 }
             },
             {
-                "name": "repo_end_task",
+                "name": "repo_end_task_v1",
                 "description": "End the current OneShot task",
                 "inputSchema": {
                     "type": "object",
@@ -153,7 +267,7 @@ class MCPServer:
                 }
             },
             {
-                "name": "repo_check_readiness",
+                "name": "repo_check_readiness_v1",
                 "description": "Check worktree readiness",
                 "inputSchema": {
                     "type": "object",
@@ -161,7 +275,7 @@ class MCPServer:
                 }
             },
             {
-                "name": "repo_autofix_readiness",
+                "name": "repo_autofix_readiness_v1",
                 "description": "Automatically fix worktree issues",
                 "inputSchema": {
                     "type": "object",
@@ -187,20 +301,20 @@ class MCPServer:
         logger.debug(f"Arguments: {json.dumps(arguments, indent=2)}")
         
         try:
-            if tool_name in ['repo_start_task', 'repo.start_task.v1']:
+            if tool_name in ['repo_start_task', 'repo_start_task_v1']:
                 result = self.task_manager.start_task(
                     arguments['task_title'],
                     arguments.get('notes', ''),
                     arguments.get('labels', [])
                 )
-            elif tool_name in ['repo_end_task', 'repo.end_task.v1']:
+            elif tool_name in ['repo_end_task', 'repo_end_task_v1']:
                 result = self.task_manager.end_task(
                     arguments['summary'],
                     arguments.get('labels', [])
                 )
-            elif tool_name in ['repo_check_readiness', 'repo.check_readiness.v1']:
+            elif tool_name in ['repo_check_readiness', 'repo_check_readiness_v1']:
                 result = WorktreeReadiness.check_readiness()
-            elif tool_name in ['repo_autofix_readiness', 'repo.autofix_readiness.v1']:
+            elif tool_name in ['repo_autofix_readiness', 'repo_autofix_readiness_v1']:
                 result = WorktreeReadiness.autofix_readiness()
             else:
                 return self.error_response(request_id, -32602, f"Unknown tool: {tool_name}")
@@ -270,7 +384,7 @@ def main():
     if HAS_MCP_SDK:
         # Try to use MCP SDK
         try:
-            run_mcp_sdk()
+            asyncio.run(run_mcp_sdk())
         except Exception as e:
             logger.error(f"MCP SDK failed: {e}, falling back to JSON-RPC")
             server = MCPServer()

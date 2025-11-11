@@ -1,0 +1,410 @@
+# Pair Programming Strategy: Creating New Research Bench Data Points
+
+## Overview
+
+This guide walks through using Codex with OneShot's MCP tools and tracing to collaboratively improve a benchmark in synth-ai, then bundle the session into a research bench datum (like `re-bench-banking77`).
+
+Quick launcher:
+```bash
+uv run oneshot-rebench pair --config research_bench/eval_configs/pair_programming_example.toml
+```
+
+## Workflow Phases
+
+### Phase 1: Setup and Preparation
+
+#### 1.1 Create Temporary Workspace
+```bash
+# Create a temporary directory for synth-ai work
+WORKSPACE_DIR=$(mktemp -d -t synth-ai-bench-XXXXXX)
+cd "$WORKSPACE_DIR"
+echo "Workspace: $WORKSPACE_DIR"
+
+# Clone synth-ai repository
+git clone https://github.com/synth-laboratories/synth-ai.git
+cd synth-ai
+
+# Install synth-ai in development mode
+uv pip install -e .
+```
+
+#### 1.2 Identify Benchmark to Improve
+- Choose a benchmark from synth-ai's baseline list: `uvx synth-ai baseline list`
+- Examples: `banking77`, `math`, `gsm8k`, `mmlu`, etc.
+- Document the current baseline performance
+- Identify improvement opportunities (prompt optimization, SFT, architecture changes, etc.)
+
+#### 1.3 Prepare Task Description
+Create a clear task description for Codex:
+```markdown
+Improve the [BENCHMARK_NAME] benchmark in synth-ai by:
+1. Analyzing current baseline performance
+2. Implementing [SPECIFIC_IMPROVEMENT] (e.g., prompt optimization, SFT, architecture changes)
+3. Validating improvements with proper evaluation
+4. Documenting results and methodology
+```
+
+### Phase 2: Start Codex Session with Tracing and MCP
+
+#### 2.1 Start Proxy Workers (for tracing)
+```bash
+# From OneShot repo root
+cd /path/to/OneShot
+./scripts/start_synth_workers.sh
+```
+
+#### 2.2 Configure Codex with OneShot MCP
+```bash
+# Ensure codex-synth is installed
+npm install -g codex-synth
+
+# Configure MCP settings (if not already done)
+mkdir -p ~/.codex-synth
+cat > ~/.codex-synth/mcp_settings.json <<EOF
+{
+  "mcpServers": {
+    "oneshot": {
+      "command": "python3",
+      "args": ["/path/to/OneShot/scripts/create_tasks/mcp_oneshot_server.py"],
+      "env": {
+        "RUN_ID": "rebench_$(date +%Y%m%d_%H%M%S)",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+EOF
+```
+
+#### 2.3 Start Codex Session
+```bash
+# Navigate to synth-ai workspace
+cd "$WORKSPACE_DIR/synth-ai"
+
+# Set up proxy for tracing
+export HTTPS_PROXY="http://localhost:18080"
+export HTTP_PROXY="http://localhost:18080"
+
+# Start codex-synth interactively
+codex-synth
+
+# Or use OneShot wrapper:
+cd /path/to/OneShot/scripts/create_tasks
+./oneshot.sh
+```
+
+### Phase 3: Pair Programming Session
+
+#### 3.1 Initial Instructions to Codex
+When Codex starts, provide these instructions:
+
+```
+You are working in the synth-ai repository to improve a benchmark. 
+
+CRITICAL: You MUST immediately call the MCP tool 'repo.start_task.v1' with:
+{
+  "task_title": "Improve [BENCHMARK_NAME] benchmark",
+  "notes": "Working on [SPECIFIC_IMPROVEMENT] to improve benchmark performance",
+  "labels": ["re-bench", "benchmark-improvement", "synth-ai"]
+}
+
+Your goal:
+1. Understand the current benchmark implementation
+2. Identify improvement opportunities
+3. Implement changes (prompt optimization, SFT, architecture, etc.)
+4. Validate improvements with proper evaluation
+5. Document results
+
+When you're done, call 'repo.end_task.v1' with:
+{
+  "summary": "Improved [BENCHMARK_NAME] benchmark by [METHOD] achieving [METRICS]",
+  "labels": ["completed"]
+}
+```
+
+#### 3.2 Workflow During Session
+- **Explore**: Have Codex explore the benchmark codebase
+- **Analyze**: Review current baseline performance and identify bottlenecks
+- **Implement**: Make improvements incrementally
+- **Test**: Run evaluations to validate improvements
+- **Iterate**: Refine based on results
+
+#### 3.3 Key Commands for Codex
+Provide Codex with these commands to use:
+```bash
+# List available baselines
+uvx synth-ai baseline list
+
+# Run baseline evaluation
+uvx synth-ai baseline [BENCHMARK_NAME] --split train --output baseline_results.json
+
+# Run prompt optimization (if applicable)
+uvx synth-ai train --type prompt_learning --config [CONFIG].toml
+
+# Run SFT training (if applicable)
+uvx synth-ai train --type sft --config [CONFIG].toml
+
+# Evaluate on test split
+uvx synth-ai baseline [BENCHMARK_NAME] --split test --output test_results.json
+```
+
+### Phase 4: Complete Session and Capture Artifacts
+
+#### 4.1 End Task
+Ensure Codex calls `repo.end_task.v1` to:
+- Capture final git diff
+- Export traces
+- Generate task artifacts
+
+#### 4.2 Verify Artifacts
+Check that the following were created in `data/tasks/created/[task_slug]/`:
+- `diff.patch` - All changes made
+- `tb_meta.json` - Task metadata
+- `trace/` - Execution traces
+- `repo_info.json` - Git repository info
+
+### Phase 5: Bundle into Research Bench Datum
+
+#### 5.1 Create Task Directory Structure
+```bash
+# From OneShot repo root
+TASK_NAME="re-bench-[BENCHMARK_NAME]"
+TASK_DIR="data/tasks/prepared/$TASK_NAME"
+mkdir -p "$TASK_DIR"
+
+# Copy artifacts from created task
+CREATED_TASK_DIR="data/tasks/created/[task_slug]"
+cp -r "$CREATED_TASK_DIR"/* "$TASK_DIR/"
+```
+
+#### 5.2 Create tb_meta.json
+Create a `tb_meta.json` file following the banking77 pattern:
+
+```json
+{
+  "task_id": "re-bench-[BENCHMARK_NAME]",
+  "metadata": {
+    "title": "Synth-AI Re-Bench: [BENCHMARK_NAME] Improvement",
+    "summary": "[Description of improvement made]",
+    "tags": ["re-bench", "synth-ai", "[BENCHMARK_NAME]", "[IMPROVEMENT_TYPE]"]
+  },
+  "repo": {
+    "git_url": "https://github.com/synth-laboratories/synth-ai",
+    "branch": "main",
+    "start_commit_sha": "[BASELINE_SHA]",
+    "subdir": "",
+    "sparse_checkout": []
+  },
+  "sensitivity": {
+    "level": "safe"
+  },
+  "lm": {
+    "instructions": "[Detailed instructions for what was improved and how to verify]"
+  },
+  "evaluation": {
+    "rubrics": [
+      {
+        "id": "[RUBRIC_ID]",
+        "criterion": "[Evaluation criterion]",
+        "weight": 0.X,
+        "evaluation_criteria": [
+          "[Specific check 1]",
+          "[Specific check 2]",
+          ...
+        ]
+      },
+      ...
+    ]
+  }
+}
+```
+
+#### 5.3 Extract Baseline SHA
+```bash
+# Get the baseline commit SHA from repo_info.json or git log
+BASELINE_SHA=$(cd "$WORKSPACE_DIR/synth-ai" && git rev-parse HEAD~1)
+echo "$BASELINE_SHA" > "$TASK_DIR/baseline_sha.txt"
+```
+
+#### 5.4 Create Dockerfile
+Create a Dockerfile that sets up the environment:
+```dockerfile
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install uv
+
+# Clone synth-ai at baseline SHA
+WORKDIR /app
+RUN git clone https://github.com/synth-laboratories/synth-ai.git .
+RUN git checkout [BASELINE_SHA]
+
+# Install synth-ai
+RUN uv pip install -e .
+
+# Apply patch
+COPY diff.patch /tmp/diff.patch
+RUN git apply /tmp/diff.patch || true
+
+# Set up environment
+ENV PYTHONPATH=/app/src
+```
+
+#### 5.5 Create Evaluation Rubrics
+Define rubrics in `tb_meta.json` that check:
+- Baseline was established correctly
+- Improvements were implemented
+- Evaluation metrics show improvement
+- Documentation is complete
+
+### Phase 6: Test the Datum
+
+#### 6.1 Run Test Evaluation
+```bash
+# Test the task locally
+cd /path/to/OneShot
+python scripts/run_re_bench.py \
+  --task "$TASK_NAME" \
+  --num-seeds 1 \
+  --model gpt-5-nano \
+  --skip-eval  # Skip eval first to test Codex run
+```
+
+#### 6.2 Verify Structure
+Ensure the task directory has:
+- `tb_meta.json` ✓
+- `Dockerfile` ✓
+- `baseline_sha.txt` ✓
+- `overlay_files/` (if needed) ✓
+- `codex-files/` (if needed) ✓
+
+### Phase 7: Finalize and Document
+
+#### 7.1 Add to Research Bench
+```bash
+# Add task to research bench configs
+cp research_bench/eval_configs/banking77.toml \
+   research_bench/eval_configs/[BENCHMARK_NAME].toml
+
+# Edit the config to use the new task
+```
+
+#### 7.2 Document the Datum
+Create a brief README or add to research_bench/README.md:
+- What benchmark was improved
+- What method was used
+- Expected improvements
+- How to run evaluation
+
+## Example: Complete Workflow
+
+```bash
+# 1. Setup
+WORKSPACE=$(mktemp -d -t synth-ai-bench-XXXXXX)
+cd "$WORKSPACE"
+git clone https://github.com/synth-laboratories/synth-ai.git
+cd synth-ai
+uv pip install -e .
+
+# 2. Start proxy and codex
+cd /path/to/OneShot
+./scripts/start_synth_workers.sh &
+export HTTPS_PROXY="http://localhost:18080"
+cd "$WORKSPACE/synth-ai"
+codex-synth
+
+# 3. In Codex session:
+# - Call repo.start_task.v1
+# - Work on benchmark improvement
+# - Call repo.end_task.v1
+
+# 4. Bundle
+cd /path/to/OneShot
+TASK_SLUG="[from created task]"
+TASK_NAME="re-bench-[BENCHMARK_NAME]"
+mkdir -p "data/tasks/prepared/$TASK_NAME"
+cp -r "data/tasks/created/$TASK_SLUG"/* "data/tasks/prepared/$TASK_NAME/"
+
+# 5. Create tb_meta.json (see template above)
+# 6. Create Dockerfile (see template above)
+# 7. Extract baseline SHA
+BASELINE_SHA=$(cd "$WORKSPACE/synth-ai" && git rev-parse HEAD~1)
+echo "$BASELINE_SHA" > "data/tasks/prepared/$TASK_NAME/baseline_sha.txt"
+
+# 8. Test
+python scripts/run_re_bench.py --task "$TASK_NAME" --num-seeds 1
+```
+
+## Key Files Reference
+
+### Created Task Structure
+```
+data/tasks/created/[task_slug]/
+├── tb_meta.json          # Task metadata
+├── diff.patch            # Git diff
+├── trace/                # Execution traces
+│   ├── session_id.txt
+│   └── session_clean.json
+├── repo_info.json        # Git info
+└── notes.md              # Task notes
+```
+
+### Research Bench Datum Structure
+```
+data/tasks/prepared/re-bench-[BENCHMARK_NAME]/
+├── tb_meta.json          # Task metadata with rubrics
+├── Dockerfile            # Environment setup
+├── baseline_sha.txt      # Baseline commit SHA
+├── overlay_files/        # Additional files
+│   ├── box_bootstrap.sh
+│   └── tb_meta.json
+└── codex-files/          # Codex binaries (if needed)
+```
+
+## Tips and Best Practices
+
+1. **Start Small**: Begin with a simple improvement to validate the workflow
+2. **Document Everything**: Have Codex document decisions and rationale
+3. **Validate Incrementally**: Test improvements as you go
+4. **Capture Traces**: Ensure proxy is running to capture execution traces
+5. **Use MCP Tools**: Leverage start_task/end_task for automatic artifact capture
+6. **Baseline First**: Always establish baseline before making changes
+7. **Test Locally**: Test the datum before committing to research bench
+
+## Troubleshooting
+
+### Codex can't find MCP tools
+- Check `~/.codex-synth/mcp_settings.json` exists and is correct
+- Verify MCP server path is absolute
+- Check that `mcp_oneshot_server.py` is executable
+
+### Traces not captured
+- Ensure proxy workers are running: `./scripts/start_synth_workers.sh`
+- Check proxy port (default: 18080)
+- Verify HTTPS_PROXY and HTTP_PROXY are set
+
+### Task artifacts missing
+- Ensure Codex called `repo.end_task.v1`
+- Check `data/tasks/created/` directory
+- Verify RUN_ID matches between MCP config and task creation
+
+### Docker build fails
+- Check Dockerfile syntax
+- Verify baseline SHA exists in synth-ai repo
+- Ensure diff.patch applies cleanly
+
+## Next Steps
+
+After creating a datum:
+1. Add it to research bench configs
+2. Run evaluation: `uv run oneshot-rebench --config research_bench/eval_configs/[BENCHMARK_NAME].toml`
+3. Compare results with baseline
+4. Document findings in research_bench/README.md
+

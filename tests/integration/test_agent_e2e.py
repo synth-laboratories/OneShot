@@ -301,9 +301,9 @@ def test_codex_with_synth_small_local_backend() -> None:
 
 
 @pytest.mark.integration
-def test_codex_with_synth_small_local_backend() -> None:
+def test_codex_with_synth_small_local_backend_tools() -> None:
     """
-    Test Codex with synth-small via local synth backend.
+    Test Codex with synth-small via local synth backend (tools forwarding test).
     
     This test verifies:
     1. Codex connects to local backend at http://host.docker.internal:8000/api/synth-research

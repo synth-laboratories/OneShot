@@ -45,6 +45,7 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.hf_cache
 nosetests.xml
 coverage.xml
 *.cover
@@ -218,3 +219,4 @@ old/.env
 !**/README.MD
 !docs/agents-opencode.md
 !docs/agents-claude-code.md
+logs.txt

@@ -1,0 +1,138 @@
+[pair_programming]
+# Required: Repository URL to clone
+repo_url = "https://github.com/synth-laboratories/synth-ai"
+
+# Optional: Branch or commit to checkout (if both specified, commit takes precedence)
+repo_branch = "main"
+# repo_commit = "abc123def456..."
+
+# Optional: Subdirectory within the repo to use as working directory
+repo_subdir = ""
+
+# Optional: Base directory for temporary workspaces (default: system temp)
+# workspace_base_dir = "/tmp/oneshot_workspaces"
+
+# Commands run after cloning (in order)
+# Defaults to ["uv pip install -e ."] if not specified
+# NOTE: Installation can be slow (30-60s) - this is normal!
+# Set to empty list [] to skip installation if dependencies are already available
+install_commands = [
+  "uv pip install synth-ai==0.2.23.dev1",
+  "uv pip install -e ."
+]
+
+# Optional commands to prepare the environment before starting Codex
+# (e.g., download data, run setup scripts)
+# Commented out by default to speed up setup - uncomment if needed
+# pre_commands = [
+#   "uvx synth-ai baseline list"
+# ]
+
+# Task title and description for Codex
+# NOTE: This example is configured for banking77, but can be adapted for any task app.
+# To adapt for other tasks:
+# 1. Update repo_url, repo_branch, and repo_subdir if needed
+# 2. Replace "banking77" with your task name in task_title and task_description
+# 3. Update paths to baseline scripts, task apps, and configs
+# 4. Update baseline commands to use your task name
+task_title = "Complete banking77 prompt optimization workflow"
+task_description = """
+Complete the full prompt optimization workflow for banking77. Follow these steps in order:
+
+NOTE: This example is configured for banking77. To adapt for other tasks:
+- Replace "banking77" with your task name throughout
+- Update paths to baseline scripts, task apps, and configs
+- Update baseline commands to use your task name (e.g., "synth-ai baseline <your-task>")
+
+STEP 1: RUN BASELINE EVALUATION
+- Find the baseline script at: examples/baseline/banking77_baseline.py
+- Run initial baseline eval to establish performance:
+  uv run --frozen synth-ai baseline banking77 --split train --seeds 0,1,2,3,4 --output baseline_before.json
+- This uses the baseline runner defined in examples/baseline/banking77_baseline.py
+- Record the baseline metrics (success_rate, mean_outcome_reward)
+
+STEP 2: DEPLOY TASK APP
+- The task app is at: examples/task_apps/banking77/banking77_task_app.py
+- Deploy it locally using uv run (--frozen skips slow dependency resolution):
+  uv run --frozen synth-ai deploy banking77 --runtime local --port 8102 --env-file .env
+- Or use the helper script (which will load .env automatically):
+  ./examples/blog_posts/gepa/deploy_banking77_task_app.sh
+- Verify it's running: curl -H "X-API-Key: $ENVIRONMENT_API_KEY" http://127.0.0.1:8102/health
+- Keep this running in the background (or note the deployment URL if using Modal)
+
+STEP 3: RUN PROMPT OPTIMIZATION
+- Choose either GEPA or MIPRO:
+  
+  Option A - GEPA:
+  - Config: examples/blog_posts/gepa/configs/banking77_gepa_local.toml
+  - Run: uv run --frozen synth-ai train --type prompt_learning --config examples/blog_posts/gepa/configs/banking77_gepa_local.toml --backend http://localhost:8000 --poll
+  - Or use helper: ./examples/blog_posts/gepa/run_gepa_banking77.sh
+  
+  Option B - MIPRO:
+  - Config: examples/blog_posts/mipro/configs/banking77_mipro_local.toml
+  - Run: uv run --frozen synth-ai train --type prompt_learning --config examples/blog_posts/mipro/configs/banking77_mipro_local.toml --backend http://localhost:8000 --poll
+  - Or use helper: ./examples/blog_posts/mipro/run_mipro_banking77.sh
+
+- Wait for optimization to complete (this may take 15-30 minutes)
+- Note the job_id and best prompt from the results
+
+STEP 4: RUN SECOND EVALUATION WITH OPTIMIZED PROMPTS
+- Extract the best prompt from optimization results
+- Update the baseline or create a new config with the optimized prompt
+- Re-run baseline eval:
+  uv run --frozen synth-ai baseline banking77 --split train --seeds 0,1,2,3,4 --output baseline_after.json
+- Compare metrics: baseline_before.json vs baseline_after.json
+
+STEP 5: SUBMIT RESULTS
+- Bundle all results (baseline metrics, optimization results, final eval)
+- Call repo_end_task_v1 with a summary of improvements
+
+IMPORTANT NOTES:
+- The baseline script is at: examples/baseline/banking77_baseline.py
+- Do NOT build local classifiers or work around API issues - use the actual API workflow
+- USE `uv run --frozen` FOR ALL COMMANDS: Always prefix synth-ai commands with `uv run --frozen` to skip slow dependency resolution (dependencies are already installed):
+  - `uv run --frozen synth-ai baseline ...` (not `uvx synth-ai baseline ...` or `synth-ai baseline ...`)
+  - `uv run --frozen synth-ai deploy ...` (not `uvx synth-ai deploy ...`)
+  - `uv run --frozen synth-ai train ...` (not `uvx synth-ai train ...`)
+- The `--frozen` flag tells uv to skip dependency resolution since everything is already installed via `uv pip install -e .`
+- The `.env` file is automatically loaded by `uv run` if it exists in the current directory
+- Required env vars (should be set automatically): SYNTH_API_KEY, ENVIRONMENT_API_KEY, GROQ_API_KEY (and OPENAI_API_KEY for MIPRO)
+- If synth-ai commands fail with "Environment variables not set", check that API keys are in the .env file
+- The backend should be running at http://localhost:8000 (check with: curl http://localhost:8000/api/health)
+"""
+
+# Codex model to use (default: "gpt-5-nano")
+# For gpt-5-* models, reasoning_effort will be automatically set to "medium"
+codex_model = "gpt-5-codex-mini"
+
+# Enable tracing via MITM proxy (default: true)
+# Set to false if you don't have the proxy running
+enable_tracing = true
+
+# Keep workspace after session completes (default: true)
+# Set to false to auto-cleanup, or use --cleanup flag
+keep_workspace = true
+
+# Optional: Custom run ID (default: auto-generated)
+# run_id = "my_custom_run_id"
+
+# Optional: Custom artifacts save path (default: OneShot repo's data/tasks/created/)
+# Use this to save tasks outside the temp workspace directory
+# artifacts_save_path = "/path/to/your/tasks/directory"
+# Or use relative path from OneShot repo root:
+# artifacts_save_path = "data/tasks/created"
+
+# Optional: Path to .env file to load environment variables from
+# The .env file will be copied to the temp workspace so synth-ai commands can access it
+# Default: OneShot repo's .env file (if it exists)
+# If not specified in TOML, defaults to OneShot/.env, then falls back to environment variables from current shell
+# Example: env_file = "~/.synth-ai/.env" or env_file = "/path/to/.env"
+# Uncomment to use a custom path:
+# env_file = "~/.synth-ai/.env"
+
+[session]
+# Session limits for cost tracking and budget enforcement
+# Default: $20 cost limit if not specified
+limit_cost_usd = 1.0  # Set to $1 for testing
+# limit_tokens = 100000  # Optional: token limit
+# limit_gpu_hours = 5.0  # Optional: GPU hours limit

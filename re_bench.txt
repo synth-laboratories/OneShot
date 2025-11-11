@@ -1,0 +1,234 @@
+# Re-Bench Banking77: Baseline Comparison Plan
+
+## Overview
+This document outlines how to compare baseline performance before and after applying the agent's patch from a re-bench-banking77 task run.
+
+## Goal
+Take the agent's outputs (diff/patch) from a re-bench-banking77 run, run the banking77 baseline twice:
+1. **Without patch** (baseline/original code)
+2. **With patch** (agent's changes applied)
+Then compare the results to measure improvement.
+
+## Input: Agent Run Directory Structure
+
+A typical re-bench-banking77 run directory contains:
+```
+data/runs/<run_id>/
+├── artifacts/
+│   ├── diff.patch                          # Primary diff file (canonical)
+│   ├── container_git_diff_from_baseline.patch  # Alternative diff location
+│   ├── container_git_diff.patch             # Another alternative
+│   ├── baseline_sha.txt                    # Baseline commit SHA (if available)
+│   └── codex-run.log                       # Agent execution log
+├── results.json                            # Run metadata
+└── evaluation_results.json                 # Task evaluation results
+```
+
+## Implementation Plan
+
+### Step 1: Extract Agent's Patch
+- Look for diff in order: `diff.patch` → `container_git_diff_from_baseline.patch` → `container_git_diff.patch`
+- Validate patch format (starts with `diff --git` or `---`)
+- Store patch content for later application
+
+### Step 2: Set Up Clean Repository
+- Clone/checkout synth-ai repository to a temporary directory
+- Ensure we're on the baseline commit (from `baseline_sha.txt` if available, otherwise use the commit specified in task metadata)
+- Verify repository is clean (no uncommitted changes)
+
+### Step 3: Run Baseline WITHOUT Patch
+- Run: `uvx synth-ai baseline banking77 --split test --output baseline_without_patch.json`
+- Use test split for final evaluation (as per re-bench-banking77 task requirements)
+- Capture:
+  - `mean_outcome_reward` (accuracy 0-1)
+  - `success_rate`
+  - `total_tasks`
+  - `successful_tasks`
+  - `failed_tasks`
+  - Execution time
+
+### Step 4: Apply Agent's Patch
+- Apply patch using `git apply` (try clean first, fallback to `--3way` if needed)
+- Verify patch applied successfully
+- If patch fails, document error and abort comparison
+
+### Step 5: Run Baseline WITH Patch
+- Run: `uvx synth-ai baseline banking77 --split test --output baseline_with_patch.json`
+- Use same test split and configuration as Step 3
+- Capture same metrics as Step 3
+
+### Step 6: Calculate Lift
+- Compute relative lift: `(with_patch_score - without_patch_score) / without_patch_score`
+- Compute absolute improvement: `with_patch_score - without_patch_score`
+- Compare per-seed results if available
+
+### Step 7: Generate Report
+Output format:
+```
+============================================================
+Re-Bench Banking77: Baseline Comparison Results
+============================================================
+
+Run ID: <run_id>
+Task: re-bench-banking77
+Patch Source: <diff_file_path>
+Baseline SHA: <baseline_sha>
+
+BASELINE (Without Patch):
+  Mean Outcome Reward: 0.XXX (XX.X%)
+  Success Rate: XX.X%
+  Total Tasks: XXX
+  Successful Tasks: XXX
+  Failed Tasks: XXX
+  Execution Time: XX.XXs
+
+WITH PATCH (Agent's Changes):
+  Mean Outcome Reward: 0.XXX (XX.X%)
+  Success Rate: XX.X%
+  Total Tasks: XXX
+  Successful Tasks: XXX
+  Failed Tasks: XXX
+  Execution Time: XX.XXs
+
+IMPROVEMENT:
+  Absolute: +0.XXX (+X.XX percentage points)
+  Relative: +XX.X% lift
+  Status: ✅ Improvement / ❌ Regression / ⚖️  No Change
+
+PER-SEED COMPARISON:
+  Seeds improved: XXX
+  Seeds regressed: XXX
+  Seeds unchanged: XXX
+
+PATCH SUMMARY:
+  Files changed: XXX
+  Lines added: XXX
+  Lines deleted: XXX
+  <brief summary of changes>
+
+============================================================
+```
+
+## Implementation Details
+
+### Script Structure
+```python
+#!/usr/bin/env python3
+"""
+Re-bench Banking77: Compare baseline performance with/without agent patch.
+
+Usage:
+    python re_bench_compare.py <run_dir> [--output re_bench.txt]
+"""
+
+import json
+import subprocess
+import tempfile
+import shutil
+from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
+
+def extract_patch(run_dir: Path) -> Optional[str]:
+    """Extract patch from agent run artifacts."""
+    # Check diff.patch, container_git_diff_from_baseline.patch, etc.
+    pass
+
+def setup_repo(baseline_sha: Optional[str] = None) -> Path:
+    """Set up clean synth-ai repository."""
+    # Clone or checkout to baseline commit
+    pass
+
+def run_baseline(repo_dir: Path, output_file: Path, split: str = "test") -> Dict[str, Any]:
+    """Run banking77 baseline and return results."""
+    # Run: uvx synth-ai baseline banking77 --split test --output <file>
+    # Parse JSON results
+    pass
+
+def apply_patch(repo_dir: Path, patch_content: str) -> bool:
+    """Apply patch to repository."""
+    # Try git apply, fallback to --3way
+    pass
+
+def compare_results(baseline: Dict, patched: Dict) -> Dict[str, Any]:
+    """Compare baseline and patched results."""
+    # Calculate lift, per-seed comparison, etc.
+    pass
+
+def generate_report(comparison: Dict, run_dir: Path) -> str:
+    """Generate formatted report."""
+    pass
+
+def main():
+    # Parse args
+    # Extract patch
+    # Setup repo
+    # Run baseline without patch
+    # Apply patch
+    # Run baseline with patch
+    # Compare and generate report
+    pass
+```
+
+### Key Considerations
+
+1. **Repository State**
+   - Need to ensure clean state between runs
+   - May need to stash/reset between runs
+   - Consider using separate temp directories for each run
+
+2. **Patch Application**
+   - Patches may be relative to repo root or subdirectories
+   - May need to handle path adjustments
+   - Use `git apply --directory` if needed
+
+3. **Baseline Configuration**
+   - Use same model, temperature, and config for both runs
+   - Use test split (100 seeds) as per task requirements
+   - Ensure consistent environment (API keys, etc.)
+
+4. **Error Handling**
+   - Handle patch application failures gracefully
+   - Handle baseline run failures
+   - Provide clear error messages
+
+5. **Performance**
+   - Baseline runs can take time (especially with 100 seeds)
+   - Consider parallel execution if comparing multiple runs
+   - Cache results if re-running comparisons
+
+## Example Usage
+
+```bash
+# Compare a specific run
+python re_bench_compare.py data/runs/20251110__03-45-09
+
+# Compare and save to file
+python re_bench_compare.py data/runs/20251110__03-45-09 --output re_bench_results.txt
+
+# Compare multiple runs
+for run_dir in data/runs/20251110__*/; do
+    python re_bench_compare.py "$run_dir" --output "${run_dir}/re_bench_comparison.txt"
+done
+```
+
+## Integration with Existing Workflow
+
+This comparison can be integrated into:
+1. **Post-run evaluation**: Automatically run after agent completes task
+2. **Batch analysis**: Compare multiple runs to find best improvements
+3. **CI/CD**: Validate that agent changes don't regress baseline performance
+
+## Expected Output Format
+
+The comparison will produce:
+- **Console output**: Formatted summary (as shown above)
+- **JSON file**: Machine-readable comparison results
+- **Markdown report**: Detailed analysis with per-seed breakdown
+
+## Next Steps
+
+1. Implement `re_bench_compare.py` script
+2. Test with existing re-bench-banking77 runs
+3. Integrate into evaluation pipeline
+4. Add to CI/CD for automated validation
+

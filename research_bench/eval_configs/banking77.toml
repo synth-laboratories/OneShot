@@ -1,0 +1,24 @@
+# Research Bench Evaluation Configuration
+# Compare gpt-5-nano vs gpt-5-codex-mini on banking77
+
+# Default settings (applied to all runs unless overridden)
+[defaults]
+codex_config = "~/.codex"
+run_baseline_comparison = true
+skip_eval_if_exists = true
+num_runs = 1
+baseline_num_seeds = 10
+verbose = false
+max_concurrent = 2  # Maximum concurrent Docker runs
+
+# Individual run configurations
+[[runs]]
+task = "re-bench-banking77"
+model = "gpt-5-nano"
+run_baseline_comparison = true
+
+[[runs]]
+task = "re-bench-banking77"
+model = "gpt-5-codex-mini"
+run_baseline_comparison = true
+

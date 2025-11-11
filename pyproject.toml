@@ -13,6 +13,7 @@ dependencies = [
     "synth-ai>=0.2.19",
     "click>=8.1.8",
     "requests>=2.32.4",
+    "pytest-timeout>=2.4.0",
 ]
 
 [build-system]
@@ -24,6 +25,7 @@ packages = [
   "src/one_shot",
   "src/local_tracing",
   "src/synth_bench",
+  "scripts",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -35,3 +37,5 @@ include = [
 
 [project.scripts]
 one-shot = "one_shot.cli:main"
+oneshot-rebench = "scripts.run_re_bench:main"
+oneshot-compare = "scripts.re_bench_compare:main"

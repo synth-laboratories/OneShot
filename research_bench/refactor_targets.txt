@@ -1,0 +1,44 @@
+Research Bench Refactor Targets (draft)
+======================================
+
+Goal
+----
+Carve out synth-specific research utilities from the general OneShot benchmark so that `research_bench/` can house experimental scoring, tracing, and baseline comparison tooling (e.g., workflows described in `re_bench.txt`). The items below are the highest-leverage moves to relocate into the new package.
+
+Proposed migrations
+-------------------
+1. Structured LM scoring pipeline (`src/one_shot/evaluate_run.py:20-118`, `src/synth_bench/evaluation/lm_rubric_scorer_structured.py`)  
+   - Today the CLI importer reaches directly into `src/synth_bench` to pull `LMRubricScorerStructured`, mixes terminal-bench logic with synth-specific report generation, and handles artifact loading in one file. Moving the evaluator + scorer registration into `research_bench/evaluators/` would isolate synth-only dependencies (AsyncOpenAI, structured outputs) from the general runner.
+
+2. Synth dataset bridge (`src/one_shot/datasets/__init__.py:1-119`)  
+   - This module registers a `TaskDatasetRegistry` from `synth_ai.task.datasets`, exposes OneShot-local splits, and normalizes metadata for synth AI expectations. Relocating it to `research_bench/datasets/local.py` keeps the core benchmark agnostic of synth-ai while still letting research workflows import the helper.
+
+3. Task conversion & preparation helpers (`src/one_shot/convert_old_task.py:1-250`, `src/one_shot/prepare_task_for_eval.py:565-613`)  
+   - Both scripts generate `codex-synth` wrappers, tailored Dockerfiles, and overlay assets for synth runs. They belong next to the `re_bench` utilities so research teams can iterate on them without touching the general CLI.
+
+4. Trace capture plumbing (`src/local_tracing/mitm_tracer.py:1-87`, `src/one_shot/task_creation/traces.py:10-76`)  
+   - These files hard-code `raw_synth_ai.db` / `clean_synth_ai.db` paths and encode the schema used by synth research. A `research_bench/tracing/` module could own the SQLite schema, extraction routines, and future migrations, while `local_tracing` retains only provider-agnostic hooks.
+
+5. Synth-only CLI shims (`src/one_shot/mitm_cli.py:73-85`, `scripts/install_codex_synth.sh`, `scripts/run_codex_synth_ai.sh`, `scripts/run_codex_box.sh`)  
+   - The current `one-shot setup` subcommand shells out to `install_codex_synth.sh`, and the run scripts inject synth API defaults (`SYNTH_BASE_URL`, `sk-synth-*` keys). Relocating these entrypoints to `research_bench/bin/` (or wrapping them via a dedicated CLI like `research_bench.cli`) prevents synth defaults from leaking into standard OneShot usage.
+
+6. Re-bench orchestration docs (`re_bench.txt`, `re_bench_test_explanation.md`)  
+   - These guides describe comparative Synth AI baselines (banking77) and should move wholesale under `research_bench/docs/` alongside any future automation scripts (e.g., `research_bench/rebench/compare.py`).
+
+Branch-specific experimental files
+----------------------------------
+Track the new files on this branch that should live under `research_bench/` instead of the general CLI/scripts layer once the package skeleton exists:
+
+- `scripts/re_bench_compare.py` – full baseline orchestration script (Docker builds, uvx synth-ai invocations, AsyncOpenAI scorer import) that belongs under `research_bench/rebench/compare.py`.
+- `scripts/debug_baseline_api.py` – Groq debugging helper tightly coupled to synth banking77 experiments; migrate to `research_bench/tools/debug_baseline_api.py`.
+- `scripts/get_score.py` – run/evaluation helper that shells into `src/one_shot/evaluate_run.py`; should ship with other research utilities (e.g., `research_bench/tools/get_score.py`).
+- `scripts/regenerate_bootstrap.py` – bootstrap regeneration helper that embeds synth-specific `box_bootstrap.sh` template; better suited for `research_bench/tasks/regenerate_bootstrap.py`.
+- `scripts/test_codex_reasoning.py` and `tests/integration/test_reasoning_effort_regression.py` – integration checks for reasoning effort wiring; relocate to `research_bench/tests/` (still runnable via pytest).
+- `re_bench.txt` and `re_bench_test_explanation.md` – narrative documentation for banking77 experimentation; move underneath `research_bench/docs/`.
+- Any new run logs or analysis artifacts (`logs.txt`, etc.) created for the research workflow should also live inside `research_bench/` or a dedicated `data/research_runs/` subtree to keep the main repo clean.
+
+Open questions
+--------------
+- Where should shared configuration (API keys, data roots) live once synth helpers move? A `research_bench/settings.py` that re-exports environment defaults might keep this contained.
+- Do we want `research_bench` to publish its own CLI (`uvx research-bench ...`) or stay as a Python package imported by bespoke notebooks/scripts?
+- Should baseline runners (referenced in `re_bench.txt`) become automated tests so regressions surface in CI, or remain ad-hoc scripts due to runtime cost?
