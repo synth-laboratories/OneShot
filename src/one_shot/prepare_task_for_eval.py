@@ -345,6 +345,7 @@ def prepare_task(created_task_path: Path, prepared_dir: Path) -> None:
     print("   ✓ Detected uv-managed repository")
     
     # Generate box_bootstrap.sh script
+    # NOTE: This template must match scripts/regenerate_bootstrap.py exactly
     bootstrap_content = '''#!/bin/bash
 set -euo pipefail
 
@@ -361,6 +362,13 @@ export RUST_LOG=${RUST_LOG:-info}
 export CODEX_TUI_RECORD_SESSION=1
 export CODEX_TUI_SESSION_LOG_PATH=/app/artifacts/codex-session.jsonl
 export OPENAI_MODEL="${OPENAI_MODEL:-gpt-5-mini}"
+
+# Load .env if it exists (for OPENAI_BASE_URL, etc.)
+if [ -f "/app/.env" ]; then
+  set -a
+  source /app/.env
+  set +a
+fi
 
 ARTIFACTS_DIR=/app/artifacts
 mkdir -p "$ARTIFACTS_DIR"
@@ -432,11 +440,30 @@ if [ -z "$PROMPT" ]; then
 fi
 
 echo "Running Codex exec (non-interactive) in /app/repo..."
+# Assemble Codex arguments (reasoning is mandatory on GPT‑5 models).
+# Codex -c flags use dotted paths: model_reasoning_effort (not reasoning.effort or reasoning_effort)
+REASONING_ARGS=()
+# Check if model requires reasoning (gpt-5-*, o1, o1-mini, o1-preview)
+if [[ "${OPENAI_MODEL}" =~ ^gpt-5- ]] || [[ "${OPENAI_MODEL}" =~ ^(o1|o1-mini|o1-preview)$ ]]; then
+  REASONING_VALUE="${OPENAI_REASONING_EFFORT:-medium}"
+  # Codex -c flags: use model_reasoning_effort (verified working format)
+  REASONING_ARGS+=(-c)
+  REASONING_ARGS+=("model_reasoning_effort=\\"${REASONING_VALUE}\\"")
+  REASONING_ARGS+=(-c)
+  REASONING_ARGS+=("reasoning.summaries=\\"auto\\"")
+  echo "[reasoning] Detected reasoning-required model: ${OPENAI_MODEL}, setting model_reasoning_effort=${REASONING_VALUE}"
+  echo "[reasoning] Passing -c flags: ${REASONING_ARGS[*]}"
+fi
 # Always pass model via Codex -m/--model flag; OPENAI_MODEL defaults to gpt-5-mini
 ( cd /app/repo && \
   echo "[debug] model: ${OPENAI_MODEL}" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
-  echo "[debug] codex exec -m '${OPENAI_MODEL}'" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
+  echo "[debug] REASONING_ARGS count: ${#REASONING_ARGS[@]}" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
+  echo "[debug] REASONING_ARGS: ${REASONING_ARGS[*]}" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
+  echo "[debug] codex exec ${REASONING_ARGS[*]} -m '${OPENAI_MODEL}'" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
+  echo "[debug] config file at /root/.codex/config.toml:" | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
+  cat /root/.codex/config.toml | tee -a "$ARTIFACTS_DIR/codex-run.log" >/dev/null && \
   codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+    "${REASONING_ARGS[@]}" \
     -m "$OPENAI_MODEL" \
     "$PROMPT" \
   2>&1 | tee "$ARTIFACTS_DIR/codex-run.log" )
@@ -508,12 +535,12 @@ if [ -d "/app/repo/.git" ]; then
       git diff "$BASELINE_SHA"..HEAD > /app/artifacts/container_git_diff_from_baseline.patch
       git format-patch "$BASELINE_SHA"..HEAD --stdout > /app/artifacts/container_git_commits_from_baseline.patch || true
       CHANGED_FILES=$(git diff --name-only "$BASELINE_SHA"..HEAD | wc -l | awk '{print $1}')
-      read ADD_DEL <<< "$(git diff --numstat "$BASELINE_SHA"..HEAD | awk '{adds+=$1; dels+=$2} END {print (adds+0)"""" """"(dels+0)}')"
+      ADD_DEL=$(git diff --numstat "$BASELINE_SHA"..HEAD | awk '{adds+=$1; dels+=$2} END {if (NR==0) print "0 0"; else print adds+0 " " dels+0}')
       ADDED_LINES=$(echo "$ADD_DEL" | awk '{print $1}')
       DELETED_LINES=$(echo "$ADD_DEL" | awk '{print $2}')
     else
       CHANGED_FILES=$(git status --porcelain=v1 | wc -l | awk '{print $1}')
-      read ADD_DEL <<< "$(git diff --numstat | awk '{adds+=$1; dels+=$2} END {print (adds+0)"""" """"(dels+0)}')"
+      ADD_DEL=$(git diff --numstat | awk '{adds+=$1; dels+=$2} END {if (NR==0) print "0 0"; else print adds+0 " " dels+0}')
       ADDED_LINES=$(echo "$ADD_DEL" | awk '{print $1}')
       DELETED_LINES=$(echo "$ADD_DEL" | awk '{print $2}')
     fi

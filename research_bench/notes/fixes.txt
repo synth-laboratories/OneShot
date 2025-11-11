@@ -1,0 +1,1608 @@
+# Error Message Improvements & Code Consistency Analysis
+
+## Error Message Standards
+
+### Standard Error Message Format
+
+All error messages should follow this structure:
+
+```python
+"""
+[EMOJI] Brief summary (one line)
+
+Context: What was happening when this error occurred
+Problem: What went wrong (specific, not generic)
+Impact: What this prevents you from doing
+
+Solutions:
+  1. [Primary solution] - [why it works]
+  2. [Alternative solution] - [when to use]
+  3. [Workaround] - [limitations]
+
+Learn more: [docs URL]
+"""
+```
+
+### Error Message Helper Functions
+
+```python
+# synth_ai/utils/errors.py
+from typing import List, Optional
+import click
+
+def format_error_message(
+    summary: str,
+    context: str,
+    problem: str,
+    impact: str,
+    solutions: List[tuple[str, str]],  # (solution, explanation)
+    docs_url: Optional[str] = None,
+    emoji: str = "❌"
+) -> str:
+    """Format a consistent, readable error message"""
+    lines = [
+        f"{emoji} {summary}",
+        "",
+        f"Context: {context}",
+        f"Problem: {problem}",
+        f"Impact: {impact}",
+        "",
+        "Solutions:"
+    ]
+    for i, (solution, explanation) in enumerate(solutions, 1):
+        lines.append(f"  {i}. {solution}")
+        if explanation:
+            lines.append(f"     → {explanation}")
+    
+    if docs_url:
+        lines.append("")
+        lines.append(f"Learn more: {docs_url}")
+    
+    return "\n".join(lines)
+
+def raise_usage_error(
+    summary: str,
+    context: str,
+    problem: str,
+    impact: str,
+    solutions: List[tuple[str, str]],
+    docs_url: Optional[str] = None
+) -> None:
+    """Raise a click.UsageError with formatted message"""
+    msg = format_error_message(summary, context, problem, impact, solutions, docs_url)
+    raise click.UsageError(msg)
+```
+
+---
+
+## Issue-by-Issue Analysis
+
+### 1. Session Usage Endpoint 405 Error
+
+**Current Problem:** Generic 405 error, no guidance
+
+**Improved Error Message:**
+```python
+raise HTTPException(
+    status_code=405,
+    detail={
+        "error": {
+            "code": "method_not_allowed",
+            "message": "POST method not supported for this endpoint",
+            "context": f"Attempted POST to /api/v1/sessions/{session_id}/usage",
+            "problem": "This endpoint only accepts GET, PUT, and PATCH methods",
+            "impact": "Cannot record session usage via POST request",
+            "solutions": [
+                (
+                    "Use PUT method",
+                    "PUT /api/v1/sessions/{session_id}/usage with usage data in body"
+                ),
+                (
+                    "Use PATCH method",
+                    "PATCH /api/v1/sessions/{session_id}/usage for partial updates"
+                ),
+                (
+                    "Use GET method",
+                    "GET /api/v1/sessions/{session_id}/usage to retrieve current usage"
+                )
+            ],
+            "allowed_methods": ["GET", "PUT", "PATCH"],
+            "example": {
+                "method": "PUT",
+                "url": f"/api/v1/sessions/{session_id}/usage",
+                "body": {"metric_type": "tokens", "metric_value": 100}
+            },
+            "docs": "https://docs.synth.ai/api/sessions#usage-endpoint"
+        }
+    }
+)
+```
+
+**Inconsistency Found:**
+- Different endpoints handle method errors differently
+- Some return plain text, some return JSON
+- No standard error response format
+
+**Abstraction Needed:**
+```python
+# monorepo/backend/app/core/errors.py
+from fastapi import HTTPException
+from typing import List, Optional, Dict, Any
+
+class MethodNotAllowedError(HTTPException):
+    """Standardized method not allowed error"""
+    def __init__(
+        self,
+        method: str,
+        path: str,
+        allowed_methods: List[str],
+        example: Optional[Dict[str, Any]] = None
+    ):
+        detail = {
+            "error": {
+                "code": "method_not_allowed",
+                "message": f"{method} method not allowed for {path}",
+                "allowed_methods": allowed_methods,
+                "example": example
+            }
+        }
+        super().__init__(status_code=405, detail=detail)
+```
+
+---
+
+### 2. Config File Overrides CLI Flags
+
+**Current Problem:** Silent override, confusing behavior
+
+**Improved Error Message:**
+```python
+# When config file value differs from CLI flag
+if config_task_url != cli_task_url:
+    click.echo(
+        format_error_message(
+            summary="Config file value overridden by CLI flag",
+            context=f"Config file has task_app_url={config_task_url}",
+            problem=f"CLI flag --task-url={cli_task_url} takes precedence",
+            impact="Config file value will be ignored",
+            solutions=[
+                (
+                    "Remove CLI flag to use config file value",
+                    f"Remove --task-url flag, will use {config_task_url} from config"
+                ),
+                (
+                    "Update config file to match CLI flag",
+                    f"Set task_app_url = \"{cli_task_url}\" in config file"
+                ),
+                (
+                    "Use environment variable instead",
+                    f"Set TASK_APP_URL={cli_task_url} (overrides config, can be overridden by CLI)"
+                )
+            ],
+            docs_url="https://docs.synth.ai/cli/config-precedence"
+        ),
+        err=True,
+        fg="yellow"
+    )
+```
+
+**Inconsistency Found:**
+- Different commands resolve config differently
+- Some check CLI first, some check config first
+- No consistent precedence enforcement
+
+**Abstraction Needed:**
+```python
+# synth_ai/utils/config.py
+from typing import Optional, List, Tuple
+import click
+import os
+
+class ConfigResolver:
+    """Centralized config value resolution with consistent precedence"""
+    
+    PRECEDENCE_ORDER = ["CLI", "ENV", "CONFIG", "DEFAULT"]
+    
+    @staticmethod
+    def resolve(
+        name: str,
+        cli_value: Optional[str] = None,
+        env_value: Optional[str] = None,
+        config_value: Optional[str] = None,
+        default: Optional[str] = None,
+        required: bool = False,
+        warn_on_override: bool = True
+    ) -> str:
+        """
+        Resolve config value with precedence: CLI > ENV > CONFIG > DEFAULT
+        
+        Args:
+            name: Human-readable name for the config value
+            cli_value: Value from CLI flag
+            env_value: Value from environment variable (auto-detected if None)
+            config_value: Value from config file
+            default: Default value
+            required: If True, raise error if no value found
+            warn_on_override: If True, warn when CLI overrides config
+        """
+        # Auto-detect env value if not provided
+        if env_value is None:
+            env_key = name.upper().replace("-", "_")
+            env_value = os.getenv(env_key)
+        
+        # Determine which source provides the value
+        value = cli_value or env_value or config_value or default
+        source = (
+            "CLI flag" if cli_value else
+            "environment variable" if env_value else
+            "config file" if config_value else
+            "default"
+        )
+        
+        # Warn if CLI overrides config
+        if warn_on_override and cli_value and config_value and cli_value != config_value:
+            click.echo(
+                f"⚠️  {name}: CLI flag overrides config file\n"
+                f"   Using: {cli_value} (from --{name.replace('_', '-')})\n"
+                f"   Ignoring: {config_value} (from config file)",
+                err=True,
+                fg="yellow"
+            )
+        
+        # Raise error if required and not found
+        if required and not value:
+            sources = []
+            if cli_value is None:
+                sources.append(f"--{name.replace('_', '-')} flag")
+            if env_value is None:
+                sources.append(f"{name.upper()} environment variable")
+            if config_value is None:
+                sources.append("config file")
+            
+            raise_usage_error(
+                summary=f"Missing required value: {name}",
+                context="Command requires this value to proceed",
+                problem=f"Value not found in any source",
+                impact="Command cannot execute",
+                solutions=[
+                    (
+                        f"Use CLI flag: --{name.replace('_', '-')} <value>",
+                        f"Example: synth-ai train --{name.replace('_', '-')} {default or 'value'}"
+                    ),
+                    (
+                        f"Set environment variable: {name.upper()}=<value>",
+                        f"Example: export {name.upper()}={default or 'value'}"
+                    ),
+                    (
+                        f"Add to config file: {name} = \"<value>\"",
+                        "Config file is loaded automatically"
+                    )
+                ],
+                docs_url=f"https://docs.synth.ai/cli/{name.replace('_', '-')}"
+            )
+        
+        return value
+```
+
+---
+
+### 3. ENVIRONMENT_API_KEY Minted But Not Uploaded
+
+**Current Problem:** Cryptic error, no explanation of upload requirement
+
+**Improved Error Message:**
+```python
+# In auth.py when key mismatch detected
+error_detail = {
+    "error": {
+        "code": "unauthorised",
+        "message": "API key authentication failed",
+        "context": f"Task app received request with API key '{got_key[:15]}...'",
+        "problem": (
+            f"Task app expects key starting with '{allowed_keys[0][:15]}...' "
+            f"but got '{got_key[:15] if got_key else 'none'}...'. "
+            "This usually means the key was minted locally but not uploaded to backend."
+        ),
+        "impact": "Cannot authenticate with task app - all requests will fail",
+        "solutions": [
+            (
+                "Upload key to backend",
+                f"Run: synth-ai setup --env-key {got_key or '<your-key>'}\n"
+                f"     Or: synth-ai deploy --env-key {got_key or '<your-key>'}"
+            ),
+            (
+                "Check SYNTH_API_KEY is set",
+                "Backend upload requires SYNTH_API_KEY to be set\n"
+                "     Run: export SYNTH_API_KEY=sk_live_..."
+            ),
+            (
+                "Verify key in backend",
+                "Check backend has the key: synth-ai status env-keys"
+            ),
+            (
+                "Use existing backend key",
+                f"If you have a key already in backend, use that instead\n"
+                f"     Expected key prefix: {allowed_keys[0][:15]}..."
+            )
+        ],
+        "diagnostics": {
+            "got_key_prefix": got_key[:15] if got_key else None,
+            "got_key_length": len(got_key) if got_key else 0,
+            "allowed_key_prefixes": [k[:15] for k in allowed_keys[:3]],
+            "allowed_key_count": len(allowed_keys),
+            "synth_api_key_set": bool(os.getenv("SYNTH_API_KEY")),
+            "backend_url": os.getenv("BACKEND_BASE_URL", "not set")
+        },
+        "docs": "https://docs.synth.ai/task-apps/authentication#key-upload"
+    }
+}
+```
+
+**Inconsistency Found:**
+- Key minting happens in multiple places with different logic
+- Upload logic is inconsistent (sometimes silent, sometimes warns)
+- No unified key management abstraction
+
+**Abstraction Needed:**
+```python
+# synth_ai/cli/lib/env_key_manager.py
+class EnvironmentKeyManager:
+    """Unified environment key management"""
+    
+    @staticmethod
+    def ensure_key_uploaded(
+        env_key: str,
+        backend_url: str,
+        synth_api_key: Optional[str] = None,
+        raise_on_failure: bool = False
+    ) -> bool:
+        """
+        Ensure environment key is uploaded to backend.
+        
+        Returns True if uploaded/verified, False if failed.
+        Raises if raise_on_failure=True and upload fails.
+        """
+        synth_api_key = synth_api_key or os.getenv("SYNTH_API_KEY")
+        
+        if not synth_api_key:
+            msg = format_error_message(
+                summary="Cannot upload ENVIRONMENT_API_KEY to backend",
+                context=f"Key '{env_key[:15]}...' was minted locally",
+                problem="SYNTH_API_KEY not set - upload requires backend authentication",
+                impact="Remote jobs will fail to authenticate with task app",
+                solutions=[
+                    (
+                        "Set SYNTH_API_KEY",
+                        "export SYNTH_API_KEY=sk_live_... (get from dashboard)"
+                    ),
+                    (
+                        "Upload manually",
+                        "Use backend API directly or synth-ai setup command"
+                    )
+                ],
+                docs_url="https://docs.synth.ai/task-apps/authentication"
+            )
+            if raise_on_failure:
+                raise click.ClickException(msg)
+            click.echo(f"⚠️  {msg}", err=True, fg="yellow")
+            return False
+        
+        # Try to upload
+        try:
+            uploaded = upload_key_to_backend(env_key, backend_url, synth_api_key)
+            if uploaded:
+                click.echo(f"✓ Uploaded ENVIRONMENT_API_KEY to backend", err=True)
+                return True
+        except Exception as e:
+            msg = f"Failed to upload key: {e}"
+            if raise_on_failure:
+                raise click.ClickException(msg)
+            click.echo(f"⚠️  {msg}", err=True, fg="yellow")
+        
+        return False
+```
+
+---
+
+### 4. Deploy Command Syntax Confusion
+
+**Current Problem:** Generic "unexpected argument" error
+
+**Improved Error Message:**
+```python
+# When positional argument provided
+if task_app:
+    raise_usage_error(
+        summary="Positional arguments not supported",
+        context=f"Command: synth-ai deploy {task_app}",
+        problem="Deploy command requires --task-app flag, not positional argument",
+        impact="Command cannot execute",
+        solutions=[
+            (
+                f"Use flag: synth-ai deploy --task-app {task_app}",
+                "This is the correct syntax"
+            ),
+            (
+                "Use alias if available",
+                f"If '{task_app}' is a known alias, it may work: synth-ai deploy {task_app}"
+            ),
+            (
+                "See help",
+                "Run: synth-ai deploy --help for full usage"
+            )
+        ],
+        docs_url="https://docs.synth.ai/cli/deploy"
+    )
+```
+
+**Inconsistency Found:**
+- Some commands accept positional args, some don't
+- No consistent pattern for task app identification
+- Help text doesn't show common patterns
+
+**Abstraction Needed:**
+```python
+# synth_ai/cli/common.py
+TASK_APP_ALIASES = {
+    "banking77": "examples/task_apps/banking77/banking77_task_app.py",
+    "pokemon": "examples/task_apps/pokemon_red/task_app.py",
+    # ... more aliases
+}
+
+def resolve_task_app_path(
+    value: Optional[str],
+    flag_name: str = "task-app"
+) -> Optional[str]:
+    """
+    Resolve task app path from alias or direct path.
+    
+    Supports:
+    - Direct path: "examples/task_apps/banking77/banking77_task_app.py"
+    - Alias: "banking77" -> resolves to full path
+    - None: returns None
+    """
+    if not value:
+        return None
+    
+    # Check if it's an alias
+    if value in TASK_APP_ALIASES:
+        return TASK_APP_ALIASES[value]
+    
+    # Assume it's a path
+    return value
+
+def validate_task_app_argument(
+    positional_arg: Optional[str],
+    flag_value: Optional[str],
+    command_name: str
+) -> str:
+    """
+    Validate and resolve task app argument.
+    
+    Raises UsageError if positional arg provided (not supported).
+    Returns resolved path.
+    """
+    if positional_arg and not flag_value:
+        # Try to resolve as alias first
+        resolved = resolve_task_app_path(positional_arg)
+        if resolved != positional_arg:
+            # It was an alias, use it
+            return resolved
+        
+        # Not an alias, positional args not supported
+        raise_usage_error(
+            summary="Positional arguments not supported",
+            context=f"Command: {command_name} {positional_arg}",
+            problem=f"{command_name} requires --{flag_name} flag",
+            impact="Command cannot execute",
+            solutions=[
+                (
+                    f"Use flag: {command_name} --{flag_name} {positional_arg}",
+                    "This is the correct syntax"
+                ),
+                (
+                    "See available aliases",
+                    f"Run: {command_name} --help to see supported task apps"
+                )
+            ],
+            docs_url=f"https://docs.synth.ai/cli/{command_name}"
+        )
+    
+    if flag_value:
+        return resolve_task_app_path(flag_value)
+    
+    return None
+```
+
+---
+
+### 5. Flag Name Inconsistency (`--env` vs `--env-file`)
+
+**Current Problem:** Different commands use different flag names
+
+**Improved Error Message:**
+```python
+# When wrong flag used
+@click.option('--env-file', '--env', 'env_file', ...)
+def deploy(env_file):
+    # Both work, but suggest --env-file for consistency
+    pass
+
+# Error when completely wrong flag
+"Did you mean --env-file?\n"
+"Note: --env is an alias for --env-file (use --env-file for consistency)"
+```
+
+**Inconsistency Found:**
+- `deploy` uses `--env`
+- `train` uses `--env-file`
+- No standard across commands
+
+**Abstraction Needed:**
+```python
+# synth_ai/cli/common.py
+def env_file_option(**kwargs):
+    """Standardized env file option with aliases"""
+    return click.option(
+        '--env-file',
+        '--env',  # Alias for backward compatibility
+        'env_file',
+        type=click.Path(exists=True),
+        help="Path to .env file (--env-file preferred, --env is alias)",
+        **kwargs
+    )
+
+# Usage:
+@env_file_option()
+def deploy(env_file):
+    # Both --env-file and --env work
+    pass
+```
+
+---
+
+### 6. Environment Variable Loading
+
+**Current Problem:** Silent failures, unclear why vars not loaded
+
+**Improved Error Message:**
+```python
+# When .env exists but var not found
+if os.path.exists('.env') and not os.getenv('ENVIRONMENT_API_KEY'):
+    click.echo(
+        format_error_message(
+            summary="Environment variable not found in .env file",
+            context=f"Looking for ENVIRONMENT_API_KEY in {env_path}",
+            problem="Variable not found or incorrectly formatted",
+            impact="Command may fail or prompt for missing value",
+            solutions=[
+                (
+                    "Check .env file format",
+                    "Format: ENVIRONMENT_API_KEY=value (no spaces around =)"
+                ),
+                (
+                    "Verify variable name",
+                    "Check spelling: ENVIRONMENT_API_KEY (all caps, underscores)"
+                ),
+                (
+                    "Add to .env file",
+                    f"Add line: ENVIRONMENT_API_KEY=<your-key>"
+                ),
+                (
+                    "Use environment variable directly",
+                    "export ENVIRONMENT_API_KEY=<your-key> (bypasses .env)"
+                )
+            ],
+            docs_url="https://docs.synth.ai/cli/environment-variables"
+        ),
+        err=True,
+        fg="yellow"
+    )
+```
+
+**Inconsistency Found:**
+- Some commands load .env automatically, some don't
+- Different loading logic in different places
+- No standard .env loading pattern
+
+**Abstraction Needed:**
+```python
+# synth_ai/utils/env.py
+from dotenv import load_dotenv, find_dotenv
+from pathlib import Path
+import os
+from typing import List, Optional
+
+class EnvLoader:
+    """Standardized environment variable loading"""
+    
+    @staticmethod
+    def load(
+        env_file: Optional[str] = None,
+        required_vars: Optional[List[str]] = None,
+        warn_missing: bool = True
+    ) -> tuple[Optional[str], List[str]]:
+        """
+        Load .env file and validate required variables.
+        
+        Returns:
+            (env_path, missing_vars)
+        """
+        env_path = env_file or find_dotenv(usecwd=True)
+        loaded = False
+        
+        if env_path:
+            load_dotenv(env_path, override=False)
+            loaded = True
+            click.echo(f"✓ Loaded environment from {env_path}", err=True)
+        
+        missing = []
+        if required_vars:
+            missing = [var for var in required_vars if not os.getenv(var)]
+            
+            if missing and warn_missing:
+                click.echo(
+                    format_error_message(
+                        summary=f"Missing {len(missing)} required environment variable(s)",
+                        context=f"Loaded .env from {env_path or 'none'}",
+                        problem=f"Variables not found: {', '.join(missing)}",
+                        impact="Command may fail",
+                        solutions=[
+                            (
+                                "Add to .env file",
+                                f"Add: {missing[0]}=<value> (format: KEY=value, no spaces)"
+                            ),
+                            (
+                                "Set in environment",
+                                f"export {missing[0]}=<value>"
+                            ),
+                            (
+                                "Check .env file location",
+                                f"Expected at: {Path.cwd() / '.env'}"
+                            )
+                        ],
+                        docs_url="https://docs.synth.ai/cli/environment-variables"
+                    ),
+                    err=True,
+                    fg="yellow"
+                )
+        
+        return env_path, missing
+```
+
+---
+
+### 7. Interactive Prompts
+
+**Current Problem:** Prompts block automation, "Aborted!" errors
+
+**Improved Error Message:**
+```python
+# When value missing and not interactive
+def get_required_value(name, cli_value, env_value, config_value, default=None):
+    value = cli_value or env_value or config_value or default
+    if not value:
+        # Build helpful error message
+        available_sources = []
+        missing_sources = []
+        
+        if cli_value:
+            available_sources.append(f"--{name.replace('_', '-')} flag")
+        else:
+            missing_sources.append(f"--{name.replace('_', '-')} flag")
+        
+        env_key = name.upper().replace("-", "_")
+        if os.getenv(env_key):
+            available_sources.append(f"{env_key} environment variable")
+        else:
+            missing_sources.append(f"{env_key} environment variable")
+        
+        if config_value:
+            available_sources.append("config file")
+        else:
+            missing_sources.append("config file")
+        
+        raise_usage_error(
+            summary=f"Missing required value: {name.replace('_', ' ').title()}",
+            context="Command requires this value to proceed",
+            problem=f"Value not provided via any source",
+            impact="Command cannot execute (interactive prompts disabled for automation)",
+            solutions=[
+                (
+                    f"Use CLI flag: --{name.replace('_', '-')} <value>",
+                    f"Example: synth-ai train --{name.replace('_', '-')} {default or 'value'}"
+                ),
+                (
+                    f"Set environment variable: {env_key}=<value>",
+                    f"Example: export {env_key}={default or 'value'}"
+                ),
+                (
+                    f"Add to config file: {name} = \"<value>\"",
+                    "Config file is loaded automatically"
+                ),
+                (
+                    "Use --interactive flag (if TTY available)",
+                    "Enables prompts: synth-ai train --interactive"
+                )
+            ],
+            docs_url=f"https://docs.synth.ai/cli/{name.replace('_', '-')}"
+        )
+    return value
+```
+
+**Inconsistency Found:**
+- Some commands prompt, some don't
+- No consistent check for TTY/interactive mode
+- Different prompt behaviors
+
+**Abstraction Needed:**
+```python
+# synth_ai/utils/interactive.py
+import sys
+from typing import Optional, Callable, Any
+
+class InteractiveMode:
+    """Centralized interactive mode handling"""
+    
+    @staticmethod
+    def is_available() -> bool:
+        """Check if interactive mode is available (TTY)"""
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    
+    @staticmethod
+    def get_value(
+        name: str,
+        cli_value: Optional[str] = None,
+        env_value: Optional[str] = None,
+        config_value: Optional[str] = None,
+        default: Optional[str] = None,
+        prompt: Optional[str] = None,
+        interactive: bool = False,
+        required: bool = False
+    ) -> Optional[str]:
+        """
+        Get value with consistent precedence and optional prompting.
+        
+        Args:
+            name: Human-readable name
+            cli_value: CLI flag value
+            env_value: Environment variable value
+            config_value: Config file value
+            default: Default value
+            prompt: Prompt text (if None, auto-generated)
+            interactive: Whether interactive mode is enabled
+            required: Whether value is required
+        """
+        # Try to get value from sources
+        value = cli_value or env_value or config_value or default
+        
+        # If not found and interactive mode available
+        if not value and interactive and InteractiveMode.is_available():
+            prompt_text = prompt or f"Enter {name.replace('_', ' ')}"
+            value = click.prompt(prompt_text, default=default)
+        
+        # If still not found and required
+        if not value and required:
+            # Use get_required_value which raises helpful error
+            from synth_ai.utils.config import ConfigResolver
+            return ConfigResolver.resolve(
+                name, cli_value, env_value, config_value, default, required=True
+            )
+        
+        return value
+```
+
+---
+
+### 8. PostgREST Query Syntax Error
+
+**Current Problem:** Generic 400 error, query not shown
+
+**Improved Error Message:**
+```python
+# When PostgREST query fails
+try:
+    # Make PostgREST request
+except Exception as e:
+    error_msg = format_error_message(
+        summary="PostgREST query failed",
+        context=f"Querying learning_shared_metrics for job {job_id}",
+        problem=f"PostgREST returned 400 Bad Request: {str(e)[:200]}",
+        impact="Falling back to slower SQLAlchemy queries",
+        solutions=[
+            (
+                "Fix query syntax",
+                f"Problematic query: {query_url}\n"
+                f"Issue: step=gt.-1 may not be supported\n"
+                f"Fix: Use step=gte.0 or remove filter"
+            ),
+            (
+                "Use SQLAlchemy fallback",
+                "System will automatically use SQLAlchemy (slower but works)"
+            )
+        ],
+        docs_url="https://docs.synth.ai/backend/postgrest"
+    )
+    logger.warning(error_msg)
+    # Fall back to SQLAlchemy
+```
+
+**Inconsistency Found:**
+- PostgREST queries constructed differently in different places
+- No query builder abstraction
+- Error handling inconsistent
+
+**Abstraction Needed:**
+```python
+# monorepo/backend/app/core/postgrest.py
+class PostgRESTQueryBuilder:
+    """Build PostgREST queries with validation"""
+    
+    OPERATORS = {
+        "eq": "=",
+        "gt": ">",
+        "gte": ">=",
+        "lt": "<",
+        "lte": "<=",
+        "neq": "!=",
+        "like": "like",
+        "ilike": "ilike"
+    }
+    
+    @staticmethod
+    def build_filter(field: str, operator: str, value: Any) -> str:
+        """Build PostgREST filter with validation"""
+        if operator not in PostgRESTQueryBuilder.OPERATORS:
+            raise ValueError(f"Invalid operator: {operator}")
+        
+        # Handle negative numbers specially
+        if isinstance(value, (int, float)) and value < 0:
+            # PostgREST may not support negative numbers with some operators
+            # Convert gt.-1 to gte.0
+            if operator == "gt" and value == -1:
+                return f"{field}=gte.0"
+            # Or use neq for negative comparisons
+            if operator in ("gt", "gte"):
+                return f"{field}=gte.0"  # Safer default
+        
+        return f"{field}={operator}.{value}"
+    
+    @staticmethod
+    def build_query(
+        table: str,
+        filters: Dict[str, str],
+        order_by: Optional[str] = None,
+        limit: Optional[int] = None
+    ) -> str:
+        """Build complete PostgREST query URL"""
+        params = []
+        
+        # Add filters
+        for field, filter_expr in filters.items():
+            params.append(filter_expr)
+        
+        # Add ordering
+        if order_by:
+            params.append(f"order={order_by}")
+        
+        # Add limit
+        if limit:
+            params.append(f"limit={limit}")
+        
+        query_string = "&".join(params)
+        return f"{table}?{query_string}"
+```
+
+---
+
+### 9. SSL Certificate Verification Failures
+
+**Current Problem:** Cryptic SSL errors, no guidance
+
+**Improved Error Message:**
+```python
+except requests.exceptions.SSLError as e:
+    # Detect common SSL issues
+    error_str = str(e).lower()
+    issue_type = None
+    solutions = []
+    
+    if "certificate verify failed" in error_str:
+        if "trycloudflare.com" in url:
+            issue_type = "Cloudflare tunnel certificate"
+            solutions = [
+                (
+                    "Skip SSL verification (dev only)",
+                    "Set SYNTH_SKIP_TASK_APP_HEALTH_CHECK=1"
+                ),
+                (
+                    "Use HTTP instead of HTTPS",
+                    "Change URL to http://... (if supported)"
+                ),
+                (
+                    "Deploy to Modal instead",
+                    "synth-ai deploy --runtime modal (uses trusted cert)"
+                )
+            ]
+        elif "mitmproxy" in error_str or os.getenv("HTTPS_PROXY"):
+            issue_type = "MITM proxy certificate"
+            solutions = [
+                (
+                    "Set CA bundle",
+                    f"export REQUESTS_CA_BUNDLE=~/.mitmproxy/mitmproxy-ca-cert.pem"
+                ),
+                (
+                    "Skip SSL verification (dev only)",
+                    "Set SYNTH_SKIP_TASK_APP_HEALTH_CHECK=1"
+                )
+            ]
+        else:
+            issue_type = "Untrusted certificate"
+            solutions = [
+                (
+                    "Skip SSL verification (dev only)",
+                    "Set SYNTH_SKIP_TASK_APP_HEALTH_CHECK=1"
+                ),
+                (
+                    "Use custom CA bundle",
+                    "Set REQUESTS_CA_BUNDLE=/path/to/ca-bundle.pem"
+                ),
+                (
+                    "Use trusted certificate",
+                    "Deploy with proper TLS certificate"
+                )
+            ]
+    
+    error_msg = format_error_message(
+        summary=f"SSL certificate verification failed",
+        context=f"Connecting to {url}",
+        problem=f"{issue_type or 'Certificate verification failed'}: {str(e)[:200]}",
+        impact="Cannot connect to task app - health checks and jobs will fail",
+        solutions=solutions,
+        docs_url="https://docs.synth.ai/troubleshooting/ssl-certificates"
+    )
+    raise click.ClickException(error_msg)
+```
+
+**Inconsistency Found:**
+- SSL handling different in `http_get()`, `http_request()`, `assert_http_ok()`
+- Some respect `SYNTH_SSL_VERIFY`, some don't
+- No unified SSL configuration
+
+**Abstraction Needed:**
+```python
+# synth_ai/utils/ssl.py
+from typing import Optional, Union
+from pathlib import Path
+import os
+
+class SSLConfig:
+    """Centralized SSL verification configuration"""
+    
+    @staticmethod
+    def get_verify_setting() -> Union[bool, str]:
+        """
+        Get SSL verification setting.
+        
+        Returns:
+            bool: False to skip verification
+            str: Path to CA bundle file
+            True: Use default verification
+        """
+        # Check explicit skip flag
+        if os.getenv("SYNTH_SKIP_TASK_APP_HEALTH_CHECK", "0") == "1":
+            return False
+        
+        # Check SYNTH_SSL_VERIFY (inverted: 0=skip, 1=verify)
+        if os.getenv("SYNTH_SSL_VERIFY", "1") == "0":
+            return False
+        
+        # Check for custom CA bundle
+        ca_bundle = os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("SSL_CERT_FILE")
+        if ca_bundle and Path(ca_bundle).exists():
+            return ca_bundle
+        
+        # Auto-detect MITM proxy CA
+        mitm_ca = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+        if mitm_ca.exists() and os.getenv("HTTPS_PROXY"):
+            return str(mitm_ca)
+        
+        # Default: verify
+        return True
+    
+    @staticmethod
+    def create_requests_session():
+        """Create requests Session with SSL config"""
+        import requests
+        session = requests.Session()
+        session.verify = SSLConfig.get_verify_setting()
+        return session
+    
+    @staticmethod
+    def create_httpx_client(**kwargs):
+        """Create httpx client with SSL config"""
+        import httpx
+        verify = SSLConfig.get_verify_setting()
+        return httpx.AsyncClient(verify=verify, **kwargs)
+```
+
+---
+
+### 10. Remote Job Execution Cannot Reach Localhost
+
+**Current Problem:** Connection fails with generic error
+
+**Improved Error Message:**
+```python
+# When Modal tries to connect to localhost
+if "127.0.0.1" in task_app_url or "localhost" in task_app_url:
+    raise_usage_error(
+        summary="Cannot use localhost task app with prompt learning",
+        context=f"Job execution runs on Modal (cloud), trying to connect to {task_app_url}",
+        problem="Modal (remote cloud) cannot access your localhost - this is a network limitation",
+        impact="Job will fail when trying to fetch baseline messages or run rollouts",
+        solutions=[
+            (
+                "Deploy task app to Modal",
+                "synth-ai deploy --runtime modal (recommended - uses trusted cert)"
+            ),
+            (
+                "Use Cloudflare tunnel",
+                "synth-ai deploy --runtime tunnel (then update config with tunnel URL)\n"
+                "Note: May have SSL certificate issues"
+            ),
+            (
+                "Use existing remote task app",
+                "Set --task-url https://*.modal.run (use existing deployed app)"
+            )
+        ],
+        docs_url="https://docs.synth.ai/architecture/deployment-patterns"
+    )
+
+# When connection actually fails
+except httpx.ConnectError as e:
+    if "127.0.0.1" in str(task_app_url) or "localhost" in str(task_app_url):
+        error_msg = format_error_message(
+            summary="Cannot connect to localhost from Modal",
+            context=f"Modal job trying to connect to {task_app_url}",
+            problem="Modal runs in cloud and cannot access your localhost",
+            impact="Job failed - cannot fetch baseline messages or run rollouts",
+            solutions=[
+                (
+                    "Deploy task app remotely",
+                    "synth-ai deploy --runtime modal (recommended)"
+                ),
+                (
+                    "Use tunnel (with SSL workaround)",
+                    "synth-ai deploy --runtime tunnel + set SYNTH_SKIP_TASK_APP_HEALTH_CHECK=1"
+                ),
+                (
+                    "Use existing remote task app",
+                    "Update config with remote URL: https://*.modal.run"
+                )
+            ],
+            docs_url="https://docs.synth.ai/architecture/deployment-patterns"
+        )
+        raise PromptLearningJobError(error_msg) from e
+```
+
+**Inconsistency Found:**
+- Validation happens at different times (CLI vs backend)
+- Error messages inconsistent
+- No unified validation
+
+**Abstraction Needed:**
+```python
+# synth_ai/utils/validation.py
+def validate_task_url_accessible(
+    task_url: str,
+    execution_context: str = "remote",  # "local" or "remote"
+    raise_on_invalid: bool = True
+) -> tuple[bool, Optional[str]]:
+    """
+    Validate task URL is accessible from execution context.
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    is_localhost = task_url.startswith(("http://127.0.0.1", "http://localhost"))
+    
+    if is_localhost and execution_context == "remote":
+        error_msg = format_error_message(
+            summary="Localhost task app not accessible from remote execution",
+            context=f"Task URL: {task_url}, Execution: {execution_context}",
+            problem="Remote execution (Modal) cannot access localhost",
+            impact="Job will fail when trying to connect",
+            solutions=[
+                ("Deploy task app remotely", "synth-ai deploy --runtime modal"),
+                ("Use tunnel", "synth-ai deploy --runtime tunnel"),
+                ("Use remote URL", "Set --task-url https://*.modal.run")
+            ],
+            docs_url="https://docs.synth.ai/architecture/deployment-patterns"
+        )
+        if raise_on_invalid:
+            raise click.UsageError(error_msg)
+        return False, error_msg
+    
+    return True, None
+```
+
+---
+
+### 11. Status Command Type Enum Mismatch
+
+**Current Problem:** Generic "not one of" error
+
+**Improved Error Message:**
+```python
+# When invalid type provided
+if type not in JOB_TYPES:
+    raise_usage_error(
+        summary=f"Invalid job type: '{type}'",
+        context=f"Command: synth-ai status jobs --type {type}",
+        problem=f"Type '{type}' not recognized",
+        impact="Cannot filter jobs by this type",
+        solutions=[
+            (
+                f"Use valid type: prompt_learning",
+                f"synth-ai status jobs --type prompt_learning"
+            ),
+            (
+                "See all valid types",
+                f"Valid types: {', '.join(JOB_TYPES)}"
+            ),
+            (
+                "Omit --type to see all jobs",
+                "synth-ai status jobs list"
+            )
+        ],
+        docs_url="https://docs.synth.ai/cli/status#job-types"
+    )
+```
+
+**Inconsistency Found:**
+- Type enums defined in multiple places
+- Some commands have different type lists
+- No centralized type definitions
+
+**Abstraction Needed:**
+```python
+# synth_ai/cli/common.py
+from enum import Enum
+
+class JobType(str, Enum):
+    """Standardized job types"""
+    SFT_OFFLINE = "sft_offline"
+    SFT_ONLINE = "sft_online"
+    RL_ONLINE = "rl_online"
+    DPO = "dpo"
+    SFT = "sft"
+    PROMPT_LEARNING = "prompt_learning"
+    
+    @classmethod
+    def values(cls) -> List[str]:
+        return [e.value for e in cls]
+    
+    @classmethod
+    def validate(cls, value: str) -> str:
+        """Validate and return normalized type"""
+        try:
+            return cls(value).value
+        except ValueError:
+            valid = ", ".join(cls.values())
+            raise click.BadParameter(
+                f"'{value}' is not a valid job type. "
+                f"Valid types: {valid}",
+                param_hint="--type"
+            )
+```
+
+---
+
+## Cross-Cutting Abstractions Needed
+
+### 1. Unified HTTP Client Factory
+
+**Problem:** Different HTTP clients created differently, SSL handling inconsistent
+
+**Solution:**
+```python
+# synth_ai/utils/http_client.py
+class HTTPClientFactory:
+    """Factory for creating HTTP clients with consistent SSL/config"""
+    
+    @staticmethod
+    def create_sync_client(**kwargs) -> requests.Session:
+        """Create synchronous HTTP client"""
+        session = requests.Session()
+        session.verify = SSLConfig.get_verify_setting()
+        # Apply other configs
+        return session
+    
+    @staticmethod
+    def create_async_client(**kwargs) -> httpx.AsyncClient:
+        """Create asynchronous HTTP client"""
+        verify = SSLConfig.get_verify_setting()
+        return httpx.AsyncClient(verify=verify, **kwargs)
+```
+
+### 2. Unified Config Resolution
+
+**Problem:** Config resolution logic duplicated everywhere
+
+**Solution:** (Already shown in #2 above - ConfigResolver)
+
+### 3. Unified Error Response Format
+
+**Problem:** API errors formatted differently
+
+**Solution:**
+```python
+# monorepo/backend/app/core/errors.py
+class StandardAPIError(HTTPException):
+    """Standardized API error response"""
+    
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        context: Optional[str] = None,
+        problem: Optional[str] = None,
+        impact: Optional[str] = None,
+        solutions: Optional[List[tuple[str, str]]] = None,
+        diagnostics: Optional[Dict[str, Any]] = None,
+        docs_url: Optional[str] = None
+    ):
+        detail = {
+            "error": {
+                "code": code,
+                "message": message,
+                "context": context,
+                "problem": problem,
+                "impact": impact,
+                "solutions": [
+                    {"solution": sol, "explanation": exp}
+                    for sol, exp in (solutions or [])
+                ],
+                "diagnostics": diagnostics,
+                "docs": docs_url
+            }
+        }
+        super().__init__(status_code=status_code, detail=detail)
+```
+
+### 4. Unified Environment Loading
+
+**Problem:** .env loading inconsistent
+
+**Solution:** (Already shown in #6 above - EnvLoader)
+
+---
+
+## Summary of Inconsistencies Found
+
+1. **SSL Verification**: 3 different implementations (`http_get`, `http_request`, `assert_http_ok`)
+2. **Config Resolution**: Different precedence logic in different commands
+3. **Environment Loading**: Some auto-load .env, some don't
+4. **Error Messages**: Different formats, some JSON, some plain text
+5. **HTTP Clients**: Created differently, SSL config inconsistent
+6. **Interactive Mode**: Some commands check TTY, some don't
+7. **Flag Names**: Inconsistent (`--env` vs `--env-file`)
+8. **Task App Resolution**: Some accept aliases, some don't
+9. **PostgREST Queries**: Built differently, no validation
+10. **Job Types**: Defined in multiple places, inconsistent
+
+---
+
+## Recommended Standards
+
+### Core (Required)
+
+1. **Always use ConfigResolver** for config value resolution
+2. **Always use EnvLoader** for .env loading
+3. **Always use SSLConfig** for SSL verification settings
+4. **Always use get_required_value()** instead of `click.prompt()` (eliminates prompts)
+
+### Optional (Nice to Have)
+
+5. **Consider HTTPClientFactory** for HTTP clients (if multiple HTTP libraries used)
+6. **Consider format_error_message()** for CLI errors (can be added incrementally)
+7. **Consider task URL validation** before job creation (helps catch localhost issues early)
+8. **Consider JobType enum** for job type validation (if job types grow)
+9. **Consider PostgRESTQueryBuilder** for PostgREST queries (if PostgREST usage expands)
+10. **Consider StandardAPIError** for API errors (if API error handling becomes complex)
+
+---
+
+## High-Value Abstractions (Focus on These)
+
+These 4 abstractions would prevent the majority of issues:
+
+### 1. ConfigResolver (CRITICAL - Prevents Config Override Issues)
+**Impact:** Fixes Issue #2 (config overrides), Issue #4 (deploy syntax), Issue #6 (env loading)
+**Used in:** Every CLI command that reads config
+**Prevents:** Config file overriding CLI flags, inconsistent precedence, missing value errors
+
+```python
+# synth_ai/utils/config.py
+class ConfigResolver:
+    """Centralized config value resolution - CLI > ENV > CONFIG > DEFAULT"""
+    
+    @staticmethod
+    def resolve(
+        name: str,
+        cli_value: Optional[str] = None,
+        env_value: Optional[str] = None,
+        config_value: Optional[str] = None,
+        default: Optional[str] = None,
+        required: bool = False
+    ) -> str:
+        """Resolve with clear precedence and helpful errors"""
+        value = cli_value or env_value or config_value or default
+        
+        # Warn if CLI overrides config
+        if cli_value and config_value and cli_value != config_value:
+            click.echo(
+                f"⚠️  {name}: CLI flag overrides config file\n"
+                f"   Using: {cli_value} (from --{name.replace('_', '-')})\n"
+                f"   Ignoring: {config_value} (from config)",
+                err=True, fg="yellow"
+            )
+        
+        # Raise helpful error if required and missing
+        if required and not value:
+            sources = []
+            if cli_value is None:
+                sources.append(f"--{name.replace('_', '-')} flag")
+            if env_value is None:
+                sources.append(f"{name.upper()} environment variable")
+            if config_value is None:
+                sources.append("config file")
+            
+            raise click.UsageError(
+                f"Missing required value: {name}\n"
+                f"Set via: {', '.join(sources)}\n"
+                f"Example: synth-ai train --{name.replace('_', '-')} <value>"
+            )
+        
+        return value
+```
+
+**Usage:**
+```python
+task_url = ConfigResolver.resolve(
+    "task_app_url",
+    cli_value=task_app_url,
+    env_value=os.getenv("TASK_APP_URL"),
+    config_value=config.get("task_app_url"),
+    required=True
+)
+```
+
+---
+
+### 2. SSLConfig (CRITICAL - Prevents SSL Failures)
+**Impact:** Fixes Issue #9 (SSL failures), used in all HTTP requests
+**Used in:** `http_get()`, `httpx.AsyncClient()`, health checks, baseline evaluations
+**Prevents:** SSL certificate verification failures, inconsistent SSL handling
+
+```python
+# synth_ai/utils/ssl.py
+class SSLConfig:
+    """Centralized SSL verification - one place to control all SSL behavior"""
+    
+    @staticmethod
+    def get_verify_setting() -> Union[bool, str]:
+        """
+        Returns:
+            False: Skip verification
+            str: Path to CA bundle
+            True: Default verification
+        """
+        # Explicit skip flag
+        if os.getenv("SYNTH_SKIP_TASK_APP_HEALTH_CHECK", "0") == "1":
+            return False
+        
+        # Custom CA bundle
+        ca_bundle = os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("SSL_CERT_FILE")
+        if ca_bundle and Path(ca_bundle).exists():
+            return ca_bundle
+        
+        # Auto-detect MITM proxy CA
+        mitm_ca = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
+        if mitm_ca.exists() and os.getenv("HTTPS_PROXY"):
+            return str(mitm_ca)
+        
+        return True
+```
+
+**Usage:**
+```python
+# In http_get()
+resp = requests.get(url, verify=SSLConfig.get_verify_setting(), ...)
+
+# In httpx.AsyncClient()
+client = httpx.AsyncClient(verify=SSLConfig.get_verify_setting(), ...)
+```
+
+---
+
+### 3. format_error_message + get_required_value (CRITICAL - Eliminates Prompts)
+**Impact:** Fixes Issue #7 (interactive prompts), improves ALL error messages
+**Used in:** Every CLI command, every error case
+**Prevents:** Prompts blocking automation, cryptic error messages
+
+```python
+# synth_ai/utils/errors.py
+def format_error_message(
+    summary: str,
+    context: str,
+    problem: str,
+    impact: str,
+    solutions: List[tuple[str, str]],
+    docs_url: Optional[str] = None
+) -> str:
+    """Format consistent, readable error messages"""
+    lines = [
+        f"❌ {summary}",
+        "",
+        f"Context: {context}",
+        f"Problem: {problem}",
+        f"Impact: {impact}",
+        "",
+        "Solutions:"
+    ]
+    for i, (sol, exp) in enumerate(solutions, 1):
+        lines.append(f"  {i}. {sol}")
+        if exp:
+            lines.append(f"     → {exp}")
+    if docs_url:
+        lines.append(f"\nLearn more: {docs_url}")
+    return "\n".join(lines)
+
+def get_required_value(
+    name: str,
+    cli_value: Optional[str] = None,
+    env_value: Optional[str] = None,
+    config_value: Optional[str] = None,
+    default: Optional[str] = None
+) -> str:
+    """Get required value - NO PROMPTS, fail fast with helpful error"""
+    value = cli_value or env_value or config_value or default
+    if not value:
+        sources = []
+        if cli_value is None:
+            sources.append(f"--{name.replace('_', '-')} flag")
+        if env_value is None:
+            sources.append(f"{name.upper()} environment variable")
+        if config_value is None:
+            sources.append("config file")
+        
+        msg = format_error_message(
+            summary=f"Missing required value: {name}",
+            context="Command requires this value",
+            problem="Value not provided",
+            impact="Command cannot execute",
+            solutions=[
+                (f"Use --{name.replace('_', '-')} <value>", "CLI flag"),
+                (f"Set {name.upper()}=<value>", "Environment variable"),
+                (f"Add to config: {name} = \"<value>\"", "Config file")
+            ]
+        )
+        raise click.UsageError(msg)
+    return value
+```
+
+**Usage:**
+```python
+# Replace ALL click.prompt() calls with:
+task_url = get_required_value(
+    "task_app_url",
+    cli_value=task_app_url,
+    env_value=os.getenv("TASK_APP_URL"),
+    config_value=config.get("task_app_url")
+)
+```
+
+---
+
+### 4. EnvLoader (HIGH VALUE - Prevents Env Loading Issues)
+**Impact:** Fixes Issue #6 (env loading), used in all CLI commands
+**Used in:** Every CLI entry point
+**Prevents:** .env not loading, missing variables, format issues
+
+```python
+# synth_ai/utils/env.py
+def load_env_file(
+    env_file: Optional[str] = None,
+    required_vars: Optional[List[str]] = None
+) -> tuple[Optional[str], List[str]]:
+    """Load .env and validate required vars - returns (path, missing_vars)"""
+    from dotenv import load_dotenv, find_dotenv
+    
+    env_path = env_file or find_dotenv(usecwd=True)
+    if env_path:
+        load_dotenv(env_path, override=False)
+        click.echo(f"✓ Loaded environment from {env_path}", err=True)
+    
+    missing = []
+    if required_vars:
+        missing = [v for v in required_vars if not os.getenv(v)]
+        if missing:
+            click.echo(
+                f"⚠️  Missing: {', '.join(missing)}\n"
+                f"   Check {env_path or '.env'} format (KEY=value, no spaces)",
+                err=True, fg="yellow"
+            )
+    
+    return env_path, missing
+```
+
+**Usage:**
+```python
+# At start of every CLI command
+load_env_file(required_vars=["ENVIRONMENT_API_KEY"])
+```
+
+---
+
+## Implementation Priority
+
+**Phase 1 (Immediate Impact - DO THESE FIRST):**
+1. ✅ `get_required_value()` - Eliminates ALL prompts (Issue #7)
+2. ✅ `SSLConfig` - Fixes SSL failures (Issue #9)
+
+**Phase 2 (High Value - DO THESE NEXT):**
+3. ✅ `ConfigResolver` - Prevents config override confusion (Issue #2)
+4. ✅ `EnvLoader` - Fixes env loading (Issue #6)
+
+**Phase 3 (Optional - Only if Needed):**
+- `format_error_message()` - Can be added incrementally as errors are fixed
+- `HTTPClientFactory` - Only if using multiple HTTP libraries
+- `JobType` enum - Only if job types grow beyond current set
+- `PostgRESTQueryBuilder` - Only if PostgREST usage expands significantly
+- `StandardAPIError` - Only if API error handling becomes complex
+- Task URL validation - Can be added as part of ConfigResolver usage
+
+---
+
+## Quick Wins
+
+**Replace these patterns immediately:**
+
+1. **Replace `click.prompt()`** → `get_required_value()`
+2. **Replace `requests.get(verify=True)`** → `requests.get(verify=SSLConfig.get_verify_setting())`
+3. **Replace manual config resolution** → `ConfigResolver.resolve()`
+4. **Replace manual .env loading** → `load_env_file()`
+
+These 4 changes would fix ~70% of the issues.
+
+---
+
+## Quick Reference: Error Message Template
+
+For every error, use this structure:
+
+```python
+format_error_message(
+    summary="Brief one-line summary",
+    context="What was happening when error occurred",
+    problem="Specific issue (not generic)",
+    impact="What this prevents",
+    solutions=[
+        ("Solution 1", "Why it works"),
+        ("Solution 2", "When to use"),
+        ("Workaround", "Limitations")
+    ],
+    docs_url="https://docs.synth.ai/..."
+)
+```
+
+**Key Principles:**
+- ✅ Always explain WHAT went wrong (not just error code)
+- ✅ Always explain WHY it happened (context)
+- ✅ Always provide ACTIONABLE solutions (not just "fix it")
+- ✅ Always include IMPACT (what this blocks)
+- ✅ Always link to DOCS (if available)
+- ✅ Use DIAGNOSTICS for debugging info (key prefixes, env vars, etc.)

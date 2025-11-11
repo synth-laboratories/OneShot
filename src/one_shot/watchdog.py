@@ -221,12 +221,14 @@ class ContainerWatchdog:
             )
             
             # Capture final logs
-            subprocess.run(
-                ["docker", "logs", self.container_name],
-                stdout=open(self.log_dir / "container_output.log", "w"),
-                stderr=subprocess.STDOUT,
-                timeout=10
-            )
+            log_file_path = self.log_dir / "container_output.log"
+            with open(log_file_path, "w") as log_file:
+                subprocess.run(
+                    ["docker", "logs", self.container_name],
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    timeout=10
+                )
             
             # If we have bootstrap.log, copy it to logs dir
             bootstrap_log = artifacts_dir / "bootstrap.log"

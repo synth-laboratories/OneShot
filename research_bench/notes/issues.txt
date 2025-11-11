@@ -1,0 +1,1243 @@
+# Issues Found in OneShot Codex Session Logs
+
+---
+
+## Session 1 - Banking77 GEPA Prompt Learning (2025-11-11)
+
+**Job ID:** `pl_014dbca59ec346e8`  
+**Task App:** Banking77 Classification  
+**Algorithm:** GEPA  
+**Backend:** `http://localhost:8000`
+
+### Critical Issues
+
+### 1. HTTP 422 Error When Fetching Events (CRITICAL)
+**Problem:** CLI repeatedly fails to fetch events with status 422:
+```
+⚠️  Could not fetch events to generate results file (status=422)
+```
+
+**Root Cause:** Response format mismatch between backend and CLI:
+- Backend endpoint `/prompt-learning/online/jobs/{job_id}/events` returns `List[Dict[str, Any]]` directly
+- CLI code expects `{"events": [...]}` format and calls `data.get("events", [])`
+
+**Location:**
+- Backend: `monorepo/backend/app/routes/prompt_learning/routes_online.py:416-424`
+- CLI: `synth-ai/synth_ai/api/train/cli.py:862-876`
+
+**Impact:** Results file generation fails, job timeline shows "No events found"
+
+**Fix Options:**
+1. Change backend to return `{"events": [...]}` format
+2. Update CLI to handle list response directly
+
+---
+
+## SSL Certificate Verification Failures
+
+### 2. Task App Health Check SSL Errors
+**Problem:** Health checks fail with SSL certificate verification errors:
+```
+SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)'))
+```
+
+**Workaround Used:** Added `SYNTH_SKIP_TASK_APP_HEALTH_CHECK=1` environment variable
+
+**Note:** This bypass was added inline but not committed to codebase
+
+**Impact:** Prevents health checks from working properly for Modal-hosted task apps
+
+**Fix Needed:** Proper SSL certificate handling or documented skip flag
+
+---
+
+## Configuration Issues
+
+### 3. Missing `--backend` CLI Flag
+**Problem:** Attempted to use non-existent `--backend` flag:
+```
+Error: No such option: --backend
+```
+
+**Workaround:** Used `BACKEND_BASE_URL` environment variable instead
+
+**Impact:** Confusing UX - users expect `--backend` flag to exist
+
+**Fix Needed:** Either add `--backend` flag or improve error message/documentation
+
+---
+
+### 4. Localhost Connectivity Issue (Expected Behavior)
+**Problem:** Remote Modal jobs cannot reach local task app at `http://127.0.0.1:8102`
+
+**Resolution:** Switched to remote Modal URL: `https://synth-laboratories-dev--synth-banking77-web-web.modal.run`
+
+**Note:** This is expected behavior - remote infrastructure cannot access localhost
+
+---
+
+### 5. API Key Format Issue
+**Problem:** Initial `ENVIRONMENT_API_KEY` value didn't match expected format
+
+**Resolution:** Switched to `sk_env_*` format key which worked correctly
+
+---
+
+## Summary
+
+**Priority Fixes:**
+1. **CRITICAL:** Fix 422 error - align events endpoint response format (backend or CLI)
+2. **HIGH:** Add proper SSL certificate handling or document skip flag
+3. **MEDIUM:** Add `--backend` flag or improve documentation
+
+**Status:** Job appears to have run successfully despite these issues, but results file generation failed due to 422 error.
+
+---
+
+## Session 2 - Backend Import Fixes (2025-01-XX)
+
+**Context:** Backend failing to start due to import errors
+
+### Import Errors
+
+#### 1. Missing `Depends` Import in chat_endpoints.py
+**Problem:** `NameError: name 'Depends' is not defined` when starting backend
+
+**Root Cause:** `Depends` was used but not imported from `fastapi`
+
+**Location:** `monorepo/backend/app/routes/synth_responses/chat_endpoints.py:31`
+
+**Fix:** Added `Depends` to FastAPI imports:
+```python
+from fastapi import APIRouter, HTTPException, Request, Depends
+```
+
+**Status:** ✅ Fixed
+
+---
+
+#### 2. Wrong Import Path for `get_session_tracker`
+**Problem:** `ImportError: cannot import name 'get_session_tracker' from 'app.core.session_usage.middleware'`
+
+**Root Cause:** Function was imported from wrong module
+
+**Location:** `monorepo/backend/app/routes/synth_responses/chat_endpoints.py:20`
+
+**Fix:** Changed import from:
+```python
+from app.core.session_usage.middleware import get_session_tracker
+```
+To:
+```python
+from app.routes.synth_responses.session_integration import get_session_tracker
+```
+
+**Status:** ✅ Fixed
+
+---
+
+### Documentation Issues
+
+#### 3. ENVIRONMENT_API_KEY Format Requirements Not Documented
+**Problem:** No documentation exists for `ENVIRONMENT_API_KEY` format requirements
+
+**Impact:** Developers don't know what format to use when setting this variable
+
+**Findings:**
+- Generated using `secrets.token_urlsafe(32)` (~43 characters)
+- URL-safe base64 encoded token
+- Minimum length: >10 characters (validated in prompt_learning validation)
+- Maximum length: 8 KiB (validated in env_keys.py)
+- Example format: `"dJXf6d1yI0zYfM0cAoZO8NV2MW6yRQUQxkYssnfAJ_g"`
+- Used for task app authentication via `X-API-Key` header
+
+**Fix:** Added documentation comment in `session_integration.py` explaining format requirements
+
+**Location:** `monorepo/backend/app/routes/synth_responses/session_integration.py:18-25`
+
+**Status:** ✅ Documented
+
+---
+
+## Session 3 - Banking77 Task App Deployment Failures (2025-11-10)
+
+**Context:** Attempting to deploy banking77 task app for prompt optimization workflow  
+**Task:** Complete banking77 prompt optimization workflow  
+**Run ID:** `pair_20251110__18-33-53`
+
+### Deployment Issues
+
+#### 1. Task App Deployment Commands Hanging/Stalling
+**Problem:** Multiple deployment attempts failed - commands either hung indefinitely or exited immediately
+
+**Symptoms:**
+- `nohup` commands not actually running in background (process stalls terminal)
+- Deploy command prompts for interactive input: `"Enter the path to your task app: Aborted!"`
+- Process starts but doesn't detach properly
+
+**Attempted Solutions:**
+- Used `nohup` with various command formats
+- Tried `uv run --frozen synth-ai deploy` with different flags
+- Attempted direct `python -m examples.task_apps.banking77.banking77_task_app` execution
+- Used helper script `./examples/blog_posts/gepa/deploy_banking77_task_app.sh`
+
+**Root Cause:** Unclear - possibly:
+- Interactive prompts in deploy command preventing background execution
+- Process not properly daemonizing
+- Port binding issues causing immediate exit
+
+**Impact:** Could not proceed with prompt optimization workflow - task app never stayed running
+
+**Status:** ⚠️ Unresolved
+
+---
+
+#### 2. Port 8102 Conflicts
+**Problem:** Multiple processes attempting to bind to port 8102, causing conflicts
+
+**Symptoms:**
+- `lsof -i :8102` shows multiple processes (PIDs: 53210, 53351, 54324, 54577)
+- Processes start then immediately exit
+- "Port already in use" errors
+- Need to repeatedly kill processes before retrying
+
+**Commands Used:**
+```bash
+lsof -i :8102
+kill <PID>
+```
+
+**Impact:** Deployment attempts fail due to port conflicts, requiring manual cleanup
+
+**Status:** ⚠️ Requires manual intervention
+
+---
+
+#### 3. ENVIRONMENT_API_KEY Not Loading from .env File
+**Problem:** `ENVIRONMENT_API_KEY` set in `.env` file but not recognized by commands
+
+**Symptoms:**
+- `set -a && source .env && set +a && echo $ENVIRONMENT_API_KEY` returns empty
+- Commands complain about missing `ENVIRONMENT_API_KEY` despite being in `.env`
+- Had to manually update from `test-env-key` to realistic format: `dJXf6d1yI0zYfM0cAoZO8NV2MW6yRQUQxkYssnfAJ_g`
+
+**Root Cause:** 
+- `.env` file may have formatting issues (comments, whitespace)
+- `uv run` may not automatically load `.env` in all contexts
+- Environment variable export not persisting across command boundaries
+
+**Workaround:** Explicitly source `.env` before commands:
+```bash
+set -a && source .env && set +a && <command>
+```
+
+**Impact:** Commands fail with "Environment variables not set" errors
+
+**Status:** ⚠️ Requires workaround
+
+---
+
+#### 4. Deploy Command Interactive Prompt Issue
+**Problem:** `synth-ai deploy` command prompts for interactive input, preventing background execution
+
+**Error:**
+```
+Enter the path to your task app: Aborted!
+```
+
+**Attempted:**
+- `uv run --frozen synth-ai deploy banking77 --runtime local --port 8102 --env .env`
+- `uv run --frozen synth-ai deploy --task-app examples/task_apps/banking77/banking77_task_app.py --runtime local --port 8102 --env .env`
+
+**Root Cause:** Deploy command may require interactive input even when `--task-app` is provided, or argument parsing issue
+
+**Impact:** Cannot run deployment in background - command hangs waiting for input
+
+**Status:** ⚠️ Unresolved
+
+---
+
+#### 5. Background Process Not Detaching Properly
+**Problem:** Using `nohup` doesn't properly detach process - terminal still stalls
+
+**Symptoms:**
+- `nohup python -m examples.task_apps.banking77.banking77_task_app --host 0.0.0.0 --port 8102 >/tmp/banking77.log 2>&1 &`
+- Process starts (`[task:server] Starting 'banking77' on 0.0.0.0:8102`) but command doesn't return
+- Terminal hangs until manually interrupted
+
+**Impact:** Cannot run task app in background - blocks further commands
+
+**Status:** ⚠️ Unresolved
+
+---
+
+#### 6. ENVIRONMENT_API_KEY Minted But Not Uploaded to Backend (COMMON MISTAKE)
+**Problem:** Agent minted a new `ENVIRONMENT_API_KEY` but didn't upload it to the backend, causing authentication failures
+
+**Symptoms:**
+- Task app deployed successfully with minted key
+- Health check fails with: `"API key missing or invalid"`
+- Error shows: `"allowed_first15":["dJXf6d1yI0zYfM0"],"got_first15":["sk_env_30c78a78"]` or `"got_first15":[]`
+- Task app expects one key format, but different (or no) key is being sent
+
+**Root Cause:**
+- `synth-ai deploy` command mints `ENVIRONMENT_API_KEY` if missing (via `preflight_env_key` or similar)
+- Key is minted and set in environment/local state, but upload to backend (`/v1/env-keys`) may fail silently or be skipped
+- Upload requires `SYNTH_API_KEY` to be set - if missing, upload is skipped with only a warning
+- Agent doesn't realize the key needs to be registered with backend for remote jobs to authenticate
+
+**Error Message Analysis:**
+Current error message is not informative enough:
+```json
+{
+  "detail": {
+    "error": {
+      "code": "unauthorised",
+      "message": "API key missing or invalid",
+      "allowed_first15": ["dJXf6d1yI0zYfM0"],
+      "allowed_count": 1,
+      "got_first15": [],
+      "got_lens": []
+    }
+  }
+}
+```
+
+**What's Missing:**
+- No explanation that the key might need to be uploaded to backend
+- No guidance on how to fix (run `synth-ai setup` or manually upload)
+- No indication that `SYNTH_API_KEY` might be missing (required for upload)
+- No link to documentation about the key registration workflow
+
+**Location:**
+- Error generation: `synth-ai/synth_ai/task/auth.py:155-165`
+- Key minting: `synth-ai/synth_ai/cli/lib/task_app_env.py:290-347` (preflight_env_key)
+- Key upload: `synth-ai/synth_ai/cli/lib/task_app_env.py:344-347` (requires SYNTH_API_KEY)
+
+**Impact:** 
+- Workflow blocked - cannot authenticate with task app
+- Agent confusion - doesn't understand why minted key doesn't work
+- Common mistake that agents repeatedly make
+
+**Fix Needed:**
+1. **Improve error messages** in `auth.py` to include:
+   - Clear explanation that key mismatch suggests backend registration issue
+   - Instructions: "If you just minted a new ENVIRONMENT_API_KEY, ensure it's uploaded to the backend. Run `synth-ai setup` or check that SYNTH_API_KEY is set and backend upload succeeded."
+   - Link to relevant documentation
+   - Show whether SYNTH_API_KEY is set (if available in context)
+
+2. **Make upload failure more visible:**
+   - If `preflight_env_key` skips upload due to missing `SYNTH_API_KEY`, emit a clear warning
+   - Consider making upload failure a hard error when deploying for remote use
+
+3. **Add validation:**
+   - After minting key, verify it's registered with backend before starting task app
+   - Or at least emit a clear warning if upload was skipped
+
+**Status:** ⚠️ Needs Fix - Error messages and upload workflow
+
+---
+
+## Summary
+
+**Critical Blockers:**
+1. Task app deployment never succeeds - commands hang or exit immediately
+2. Port conflicts require manual cleanup
+3. Environment variables not loading reliably
+4. **ENVIRONMENT_API_KEY minted but not uploaded to backend** - common agent mistake causing auth failures
+
+**Workarounds Attempted:**
+- Manual process management (kill, lsof)
+- Explicit environment sourcing
+- Direct Python module execution
+- Multiple deployment command variations
+
+**Key Issues Requiring Fixes:**
+- **Error messages need improvement**: Current API key auth errors don't explain backend registration requirement
+- **Upload workflow visibility**: Key upload failures are too silent - agents don't realize upload was skipped
+- **Validation gaps**: No verification that minted keys are registered before task app starts
+
+**Final Status:** Workflow incomplete - baseline evaluation succeeded but could not proceed with optimization due to deployment failures
+
+---
+
+## Session 4 - Banking77 Prompt Optimization Workflow (2025-11-10)
+
+**Context:** Attempting to complete full banking77 prompt optimization workflow  
+**Task:** Complete banking77 prompt optimization workflow  
+**Run ID:** `pair_20251110__19-06-28`  
+**Job ID:** `pl_9182e89c750b4bff`, `pl_b77900d6115c4735`
+
+### Critical Issues
+
+#### 1. Deploy Command Syntax Confusion (FOOTGUN)
+**Problem:** Agent attempted `synth-ai deploy banking77` expecting positional argument, but command requires `--task-app` flag
+
+**Error:**
+```
+Error: Got unexpected extra argument (banking77)
+```
+
+**Root Cause:**
+- CLI design uses flags (`--task-app`) not positional arguments
+- Agent assumed `banking77` could be passed as positional arg based on command pattern
+- No clear error message explaining correct syntax
+
+**Impact:** 
+- Multiple failed deployment attempts
+- Agent confusion about correct command format
+- Wasted time trying variations
+
+**Fix Needed:** 
+- Better error message: "Did you mean: `synth-ai deploy --task-app banking77`?"
+- Or support positional arguments for common task apps
+- Improve CLI help/docs to show common usage patterns
+
+**Location:** `synth-ai/synth_ai/cli/deploy.py:36-50`
+
+---
+
+#### 2. Config File Overrides CLI Flags (CRITICAL FOOTGUN)
+**Problem:** Config file `task_app_url` value overrides `--task-url` CLI flag, causing unexpected behavior
+
+**Symptoms:**
+- Agent sets `--task-url http://127.0.0.1:8102` via CLI flag
+- Config file has `task_app_url = "https://synth-laboratories-dev--synth-banking77-web-web.modal.run"`
+- Health check still hits remote Modal URL despite CLI flag
+- Training job uses remote URL from config, not CLI override
+
+**Root Cause:**
+- Config file values take precedence over CLI flags in some contexts
+- `--task-url` flag may not override config file `task_app_url` field
+- No clear precedence documentation or error when override fails
+
+**Impact:**
+- Agent cannot use local task app despite explicit CLI flag
+- Confusion about which URL is actually being used
+- Workflow blocked - cannot test locally
+
+**Fix Needed:**
+- CLI flags should always override config file values (or clear precedence rules)
+- Warning message when config file value differs from CLI flag
+- Documentation explaining precedence order
+- Or separate config fields: `task_app_url` (default) vs `task_app_url_override` (CLI)
+
+**Location:** 
+- Config loading: `synth-ai/synth_ai/api/train/prompt_learning.py` (config parsing)
+- CLI flag handling: `synth-ai/synth_ai/api/train/cli.py`
+
+---
+
+#### 3. Remote Backend Cannot Reach Localhost (ARCHITECTURAL LIMITATION)
+**Problem:** Training jobs run on remote backend (Modal/cloud) which cannot access local task app at `http://127.0.0.1:8102`
+
+**Symptoms:**
+- Local task app deployed successfully and responding to health checks locally
+- Training job created successfully (`pl_9182e89c750b4bff`, `pl_b77900d6115c4735`)
+- Job fails to fetch baseline messages or connect to task app
+- Connection errors: "All connection attempts failed"
+
+**Root Cause:**
+- Backend infrastructure runs remotely (Modal/cloud)
+- Remote infrastructure cannot access `localhost` or `127.0.0.1` on user's machine
+- This is fundamental network architecture limitation, not a bug
+
+**Impact:**
+- Cannot use local task app with remote backend
+- Must use either:
+  - Local backend + local task app (all local)
+  - Remote backend + remote task app (all remote)
+  - Tunnel/proxy to expose local app to remote backend
+
+**Workarounds Attempted:**
+- Agent tried Cloudflare tunnel (`--runtime tunnel`)
+- Agent attempted to run local backend (`synth-ai serve`)
+- User explicitly requested local task app, but architecture doesn't support it
+
+**Fix Needed:**
+- **Documentation**: Clear explanation that remote backend requires remote-accessible task app
+- **CLI validation**: Warning when `--task-url` points to localhost but backend is remote
+- **Better error messages**: "Cannot connect to localhost from remote backend. Use tunnel mode or remote task app URL."
+- **Architecture docs**: Explain local vs remote deployment patterns
+
+**Status:** ⚠️ Architectural limitation - needs better documentation and validation
+
+---
+
+#### 4. Backend Port Conflicts and Confusion
+**Problem:** Port 8000 already occupied by monorepo backend, causing confusion about which backend is active
+
+**Symptoms:**
+- `lsof -i :8000` shows monorepo backend running (PID 54158)
+- Agent tried to start `synth-ai serve` on port 8001 but it didn't start properly
+- Training commands point to `http://localhost:8000` but unclear which backend responds
+- Multiple backend instances causing confusion
+
+**Root Cause:**
+- No port conflict detection or clear error messages
+- Multiple backends can run simultaneously without clear indication
+- No easy way to identify which backend is handling requests
+
+**Impact:**
+- Confusion about which backend is being used
+- Potential for wrong backend handling requests
+- Hard to debug connection issues
+
+**Fix Needed:**
+- Port conflict detection with clear error messages
+- Backend identification in health check responses
+- CLI command to list running backends
+- Better documentation about backend management
+
+---
+
+#### 5. SSL Certificate Verification Failures (Repeated from Session 1)
+**Problem:** Health checks fail with SSL certificate verification errors for Modal URLs
+
+**Error:**
+```
+SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)'))
+```
+
+**Impact:** Cannot verify remote task app health, blocking workflow
+
+**Status:** ⚠️ Same as Session 1 - needs proper SSL handling or documented skip flag
+
+---
+
+#### 6. Interactive Prompts Blocking Automation (Repeated from Session 3)
+**Problem:** Commands prompt for interactive input even when flags are provided
+
+**Examples:**
+- `synth-ai train` prompts: "Select an option [1]: Aborted!"
+- `synth-ai deploy` prompts: "Enter the path to your task app: Aborted!"
+- `synth-ai train` prompts: "No value found for TASK_APP_URL. Enter value for TASK_APP_URL: Aborted!"
+
+**Impact:** 
+- Cannot run commands in background or automated scripts
+- Blocks CI/CD workflows
+- Agent workflows fail due to interactive prompts
+
+**Status:** ⚠️ Same as Session 3 - needs non-interactive mode or better flag handling
+
+---
+
+#### 7. Environment Variable Loading Issues (Repeated from Session 3)
+**Problem:** `ENVIRONMENT_API_KEY` and other vars not loading reliably from `.env` file
+
+**Symptoms:**
+- Agent had to manually add `ENVIRONMENT_API_KEY=banking77key` to `.env`
+- Agent had to manually add `TASK_APP_URL=http://127.0.0.1:8102` to `.env`
+- Commands still prompt for missing values despite `.env` file
+
+**Status:** ⚠️ Same as Session 3 - needs reliable `.env` loading
+
+---
+
+#### 8. Response Format Warning (Similar to Session 1)
+**Problem:** CLI shows warning about unexpected response type
+
+**Warning:**
+```
+⚠️  Unexpected response type: list
+```
+
+**Root Cause:** Similar to Session 1 - CLI handling list response from events endpoint
+
+**Status:** ⚠️ Related to Session 1 issue - may be partially fixed but still occurring
+
+---
+
+#### 9. Baseline Evaluation Failed Due to SSL Errors
+**Problem:** All baseline evaluation seeds failed with SSL certificate verification errors
+
+**Symptoms:**
+- Baseline run completed but recorded `success_rate=0.0` and `mean_outcome_reward=0.0`
+- All 5 seeds failed with same error: `[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate`
+- Results saved to `baseline_before.json` but contain no successful metrics
+
+**Impact:**
+- No baseline metrics to compare against optimized prompts
+- Cannot evaluate improvement from prompt optimization
+- Workflow cannot proceed to Step 4 (comparison)
+
+**Root Cause:** Same SSL certificate issue as Session 1 - baseline evaluation tries to connect to remote services with SSL verification failures
+
+**Status:** ⚠️ Same root cause as Session 1 SSL issues
+
+---
+
+#### 10. GEPA Job Failed During Pattern Validation
+**Problem:** GEPA job `pl_9182e89c750b4bff` failed during initial pattern validation phase
+
+**Failure Point:**
+- Job created successfully
+- Failed during "pattern validation" phase
+- Backend attempted to fetch baseline messages from task app
+- All connection attempts failed: "All connection attempts failed"
+
+**Root Cause:** 
+- Same as Issue #3 (Remote Backend Cannot Reach Localhost)
+- Backend running remotely (Modal/cloud) cannot access `http://127.0.0.1:8102`
+- Job failed before producing any optimized prompts
+- No optimized prompt extracted, so Step 4 (re-run baseline with optimized prompt) could not proceed
+
+**Specific Error Sequence:**
+1. Local task app deployed successfully at `http://127.0.0.1:8102`
+2. Health check passed locally: `{"status":"healthy","authorized":true}`
+3. GEPA job created with job ID `pl_9182e89c750b4bff`
+4. Job attempted to fetch baseline messages from task app
+5. Backend (running remotely) tried to connect to `http://127.0.0.1:8102`
+6. Connection failed: "All connection attempts failed"
+7. Job failed during pattern validation phase
+8. No optimized prompt produced
+
+**Why We Know It Failed:**
+- Agent's final summary explicitly states: "the backend could not reach the local task app at http://127.0.0.1:8102"
+- Job ID `pl_9182e89c750b4bff` was created but never completed
+- Error occurred during "initial pattern validation" when backend tried to fetch baseline messages
+- This is the same architectural limitation documented in Issue #3
+
+**Impact:**
+- No optimized prompt produced
+- Cannot proceed to Step 4 (re-run baseline with optimized prompt)
+- Workflow incomplete - only baseline metrics (all zeros) recorded
+
+**Status:** ⚠️ Confirmed failure due to Issue #3 (Remote Backend Cannot Reach Localhost)
+
+---
+
+### Summary of New Issues
+
+**Critical Footguns:**
+1. **Config file overrides CLI flags** - Most critical UX issue, blocks local development
+2. **Deploy command syntax confusion** - Poor error messages, unclear API
+3. **Remote backend + localhost incompatibility** - Architectural limitation needs better docs
+
+**Repeated Issues:**
+- SSL certificate errors (Session 1)
+- Interactive prompts blocking automation (Session 3)
+- Environment variable loading (Session 3)
+- Response format warnings (Session 1)
+
+**Architectural Gaps:**
+- No clear local vs remote deployment patterns documented
+- No validation when mixing local/remote components
+- No port conflict detection
+- No backend identification/management tools
+
+**Final Status:** Workflow incomplete - both baseline and prompt optimization failed:
+
+1. **Baseline evaluation failed**: All 5 seeds failed with SSL certificate errors, resulting in `success_rate=0.0` and `mean_outcome_reward=0.0` in `baseline_before.json`
+2. **GEPA job failed**: Job `pl_9182e89c750b4bff` failed during pattern validation phase because remote backend could not reach local task app at `http://127.0.0.1:8102` (Issue #3)
+3. **No optimized prompt produced**: Workflow stopped before Step 4 (re-run baseline with optimized prompt) could proceed
+4. **Root causes**: 
+   - SSL certificate verification failures (Session 1 issue, still unresolved)
+   - Remote backend + localhost incompatibility (Issue #3, architectural limitation)
+   - Config file overriding CLI flags (Issue #2, prevented proper local setup)
+
+**Agent's Final Summary:**
+- Baseline: All seeds failed with SSL certificate verification errors
+- GEPA: Job failed because backend couldn't access locally hosted task app
+- Next steps suggested: Expose task app via tunnel or use remote-accessible endpoint
+
+---
+
+## Session 5 - Banking77 Prompt Optimization with Cloudflare Tunnel (2025-11-10)
+
+**Context:** Second attempt at completing banking77 prompt optimization workflow  
+**Task:** Complete banking77 prompt optimization workflow  
+**Run ID:** `pair_20251110__19-24-12`  
+**Job ID:** `pl_015693503b1d48ae`
+
+### Critical Issues
+
+#### 1. Flag Name Inconsistency: `--env-file` vs `--env` (FOOTGUN)
+**Problem:** Agent tried `--env-file` flag but command only accepts `--env`
+
+**Error:**
+```
+Error: No such option: --env-file Did you mean --env?
+```
+
+**Root Cause:**
+- `synth-ai deploy` uses `--env` flag
+- `synth-ai train` uses `--env-file` flag
+- Inconsistent flag naming across commands causes confusion
+
+**Impact:**
+- Agent wasted time trying wrong flag name
+- Multiple failed attempts before discovering correct flag
+- Poor UX - users must remember different flag names for different commands
+
+**Fix Needed:**
+- Standardize flag names across all commands (prefer `--env-file` as more descriptive)
+- Or add aliases so both `--env` and `--env-file` work
+- Better error messages with examples
+
+**Location:** 
+- `synth-ai/synth_ai/cli/deploy.py` (uses `--env`)
+- `synth-ai/synth_ai/api/train/cli.py` (uses `--env-file`)
+
+**Status:** ⚠️ Needs standardization
+
+---
+
+#### 2. Deploy Command Syntax Confusion (Repeated from Session 4)
+**Problem:** Agent attempted `synth-ai deploy banking77` expecting positional argument
+
+**Error:**
+```
+Error: Got unexpected extra argument (banking77)
+```
+
+**Status:** ⚠️ Same as Session 4 Issue #1 - still not fixed
+
+---
+
+#### 3. Environment Variable Loading Still Broken (Repeated from Session 3)
+**Problem:** `ENVIRONMENT_API_KEY` not loading from `.env` file even with explicit sourcing
+
+**Symptoms:**
+- Agent ran `set -a; source .env; uv run --frozen synth-ai deploy ...`
+- Still got: `ENVIRONMENT_API_KEY not in process environment`
+- Had to manually add `ENVIRONMENT_API_KEY=sk_env_dummy` to `.env` file
+- `--env .env` flag didn't help - still required manual addition
+
+**Root Cause:**
+- `uv run` may spawn subprocess that doesn't inherit environment properly
+- `--env .env` flag may not be loading variables correctly
+- Environment variable persistence issues across command boundaries
+
+**Impact:**
+- Workflow blocked until manual intervention
+- Agent confusion about why explicit sourcing doesn't work
+
+**Status:** ⚠️ Same as Session 3 Issue #3 - still not fixed
+
+---
+
+#### 4. Config File Still Overrides Environment Variables (Repeated from Session 4)
+**Problem:** Config file `task_app_url` value overrides `TASK_APP_URL` environment variable
+
+**Symptoms:**
+- Agent added `TASK_APP_URL=http://127.0.0.1:8102` to `.env`
+- Config file had `task_app_url = "https://synth-laboratories-dev--synth-banking77-web-web.modal.run"`
+- Health check still hit remote Modal URL despite environment variable
+- Had to manually edit config file to change URL
+
+**Status:** ⚠️ Same as Session 4 Issue #2 - still not fixed
+
+---
+
+#### 5. Cloudflare Tunnel SSL Certificate Verification Failure
+**Problem:** Successfully deployed task app via Cloudflare tunnel, but SSL verification still fails
+
+**Sequence:**
+1. Agent successfully deployed tunnel: `synth-ai deploy --runtime tunnel --tunnel-mode quick`
+2. Got tunnel URL: `https://favourite-pressing-folk-bus.trycloudflare.com`
+3. Updated config to use tunnel URL
+4. Health check failed with SSL certificate verification error
+5. Agent tried switching to HTTP: `http://favourite-pressing-folk-bus.trycloudflare.com`
+6. Health check passed with HTTP
+7. GEPA job `pl_015693503b1d48ae` created successfully
+8. Job failed when backend tried to fetch rollouts - SSL verification error again
+
+**Error:**
+```
+SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)'))
+```
+
+**Root Cause:**
+- Cloudflare tunnel uses self-signed or untrusted certificates
+- Backend (running remotely) cannot verify tunnel certificates
+- Even though HTTP worked for health check, backend still tries HTTPS for actual requests
+- Backend code doesn't have option to skip SSL verification
+
+**Impact:**
+- Tunnel deployment works but cannot be used for actual optimization jobs
+- Workaround (HTTP) doesn't work for backend requests
+- No way to use tunnel for remote backend jobs
+
+**Fix Needed:**
+- Backend needs option to skip SSL verification for tunnel URLs (with warning)
+- Or use proper SSL certificates for tunnels
+- Or document that tunnels don't work with remote backend
+- Better error message explaining tunnel SSL limitations
+
+**Status:** ⚠️ Critical blocker - tunnel workaround doesn't actually work
+
+---
+
+#### 6. Baseline Evaluation Failed Again (Repeated from Session 4)
+**Problem:** All baseline seeds failed with SSL certificate verification errors
+
+**Symptoms:**
+- Baseline completed but recorded `success_rate=0.0` and `mean_outcome_reward=0.0`
+- All 5 seeds failed with SSL certificate errors
+- Same error as Session 4
+
+**Status:** ⚠️ Same as Session 4 Issue #9 - still not fixed
+
+---
+
+#### 7. GEPA Job Failed Due to SSL Verification
+**Problem:** GEPA job `pl_015693503b1d48ae` failed when backend tried to fetch rollouts from tunnel
+
+**Failure Point:**
+- Job created successfully
+- Health check passed (using HTTP)
+- Job started and attempted to fetch baseline rollouts
+- Backend tried HTTPS connection to tunnel URL
+- SSL verification failed: "certificate verify failed: unable to get local issuer certificate"
+- Job failed before producing optimized prompts
+
+**Why It Failed:**
+- Health check used HTTP and passed
+- But backend job execution uses HTTPS for actual requests
+- Tunnel HTTPS certificate not trusted by backend
+- No way to disable SSL verification for backend requests
+
+**Impact:**
+- No optimized prompt produced
+- Workflow incomplete - cannot proceed to Step 4
+
+**Status:** ⚠️ Confirmed failure due to SSL certificate verification
+
+---
+
+#### 8. Interactive Prompts Still Blocking (Repeated from Session 3 & 4)
+**Problem:** Commands still prompt for interactive input
+
+**Examples:**
+- `synth-ai train` prompts: "Select an option [1]: Aborted!"
+- `synth-ai train` prompts: "No value found for TASK_APP_URL. Enter value for TASK_APP_URL: Aborted!"
+
+**Status:** ⚠️ Same as Session 3 Issue #4 and Session 4 Issue #6 - still not fixed
+
+---
+
+#### 9. Response Format Warning (Repeated from Session 1 & 4)
+**Problem:** CLI shows warning about unexpected response type
+
+**Warning:**
+```
+⚠️  Unexpected response type: list
+```
+
+**Status:** ⚠️ Same as Session 1 and Session 4 Issue #8 - still occurring
+
+---
+
+### Summary of New Issues
+
+**New Critical Issues:**
+1. **Flag name inconsistency** (`--env` vs `--env-file`) - causes confusion across commands
+2. **Cloudflare tunnel SSL failure** - tunnel works for health checks but fails for actual job execution
+
+**Repeated Issues (Still Not Fixed):**
+- Deploy command syntax confusion (Session 4)
+- Environment variable loading (Session 3)
+- Config file overriding environment variables (Session 4)
+- Baseline SSL errors (Session 4)
+- Interactive prompts blocking automation (Session 3, 4)
+- Response format warnings (Session 1, 4)
+
+**Key Finding:**
+- Agent successfully used Cloudflare tunnel as workaround for localhost issue
+- But tunnel SSL certificate verification still blocks actual job execution
+- HTTP works for health checks but backend uses HTTPS for requests, causing failure
+- Tunnel workaround doesn't actually solve the problem
+
+**Final Status:** Workflow incomplete - baseline failed, GEPA job failed due to SSL verification:
+
+1. **Baseline**: All seeds failed with SSL certificate errors (same as Session 4)
+2. **Tunnel deployment**: Successfully deployed but SSL verification blocks job execution
+3. **GEPA job**: Job `pl_015693503b1d48ae` failed when backend tried HTTPS connection to tunnel
+4. **Root causes**:
+   - SSL certificate verification failures (persistent across all sessions)
+   - Backend uses HTTPS for requests even when HTTP health check passes
+   - No way to disable SSL verification for tunnel URLs
+   - Multiple repeated issues from previous sessions still unresolved
+
+**Agent's Final Summary:**
+- Baseline: All seeds failed with SSL certificate errors
+- Tunnel: Successfully deployed but backend cannot verify tunnel certificate
+- GEPA: Job failed when backend tried to fetch rollouts due to SSL verification
+- Next steps: Need trusted TLS certificate or ability to disable SSL verification
+
+---
+
+## Session 6 - Banking77 Prompt Optimization with MITM Proxy CA Bundle (2025-11-10)
+
+**Context:** Third attempt at completing banking77 prompt optimization workflow  
+**Task:** Complete banking77 prompt optimization workflow  
+**Run ID:** `pair_20251110__19-35-55`  
+**Job IDs:** `pl_ec6078f686be4852`, `pl_4d86af3abc184909`
+
+### Critical Issues
+
+#### 1. Flag Name Inconsistency Repeated (Session 5 Issue #1)
+**Problem:** Agent tried `--env-file` flag but `synth-ai deploy` only accepts `--env`
+
+**Error:**
+```
+Error: No such option: --env-file Did you mean --env?
+```
+
+**Status:** ⚠️ Same as Session 5 Issue #1 - still not fixed
+
+---
+
+#### 2. Deploy Command Syntax Confusion Repeated (Session 4 & 5)
+**Problem:** Agent attempted `synth-ai deploy banking77` expecting positional argument
+
+**Error:**
+```
+Error: Got unexpected extra argument (banking77)
+```
+
+**Status:** ⚠️ Same as Session 4 Issue #1 and Session 5 Issue #2 - still not fixed
+
+---
+
+#### 3. Environment Variable Loading Still Broken (Sessions 3, 4, 5)
+**Problem:** `ENVIRONMENT_API_KEY` not loading from `.env` file
+
+**Symptoms:**
+- Agent had to manually set: `ENVIRONMENT_API_KEY=sk_env_for_banking77`
+- Even with explicit environment variable, had to pass it inline with commands
+
+**Status:** ⚠️ Same as Sessions 3, 4, 5 - still not fixed
+
+---
+
+#### 4. Config File Overrides Environment Variables (Sessions 4, 5)
+**Problem:** Config file `task_app_url` overrides `TASK_APP_URL` environment variable
+
+**Status:** ⚠️ Same as Session 4 Issue #2 and Session 5 Issue #4 - still not fixed
+
+---
+
+#### 5. Status Command Flag and Type Value Issues
+**Problem:** Multiple issues with `synth-ai status jobs` command
+
+**Issues:**
+1. **Wrong flag placement**: Agent tried `synth-ai status jobs --limit 5` but `--limit` is not a top-level option
+   - Error: `Error: No such option: --limit`
+   - Should be: `synth-ai status jobs list --limit 5`
+
+2. **Wrong type value**: Agent tried `--type prompt_learning` but valid values are different
+   - Error: `Invalid value for '--type': 'prompt_learning' is not one of 'sft_offline', 'sft_online', 'rl_online', 'dpo', 'sft'`
+   - Prompt learning jobs don't match the expected type enum
+
+**Impact:**
+- Cannot easily query prompt learning jobs via CLI
+- Confusing error messages don't explain correct usage
+- Agent wasted time trying different flag combinations
+
+**Fix Needed:**
+- Add `prompt_learning` to valid type values, or
+- Document that prompt learning jobs use different command/type
+- Better error messages with examples
+
+**Location:** `synth-ai/synth_ai/cli/commands/status/`
+
+**Status:** ⚠️ Needs fix - CLI type enum doesn't match actual job types
+
+---
+
+#### 6. Baseline Evaluation Success with MITM Proxy CA Bundle
+**Problem:** Baseline evaluation failed until agent discovered MITM proxy CA certificate
+
+**Solution Found:**
+- Agent discovered MITM proxy running: `HTTPS_PROXY=http://localhost:18154`
+- Found CA certificate: `/Users/joshpurtell/.mitmproxy/mitmproxy-ca-cert.pem`
+- Used CA bundle override: `REQUESTS_CA_BUNDLE=/Users/joshpurtell/.mitmproxy/mitmproxy-ca-cert.pem SSL_CERT_FILE=/Users/joshpurtell/.mitmproxy/mitmproxy-ca-cert.pem`
+- Baseline succeeded: `mean_outcome_reward=0.6`, `success_rate=1.0`
+
+**Root Cause:**
+- Environment has MITM proxy intercepting HTTPS traffic
+- Proxy uses self-signed certificate that's not in default CA bundle
+- Baseline evaluation needs proxy CA to verify intercepted connections
+
+**Impact:**
+- Baseline works after discovering proxy CA
+- But this is a workaround - not documented or automatic
+- Other commands may still fail without explicit CA bundle
+
+**Fix Needed:**
+- Auto-detect MITM proxy and use its CA certificate
+- Or document proxy setup and CA bundle requirement
+- Or provide flag to skip SSL verification for local development
+
+**Status:** ⚠️ Workaround found but not documented
+
+---
+
+#### 7. Cloudflare Tunnel SSL Verification Still Fails (Session 5 Issue #5)
+**Problem:** Tunnel deployed successfully but backend cannot verify tunnel certificate
+
+**Sequence:**
+1. Agent successfully deployed tunnel: `https://colored-found-registered-franchise.trycloudflare.com`
+2. Health check passed with HTTP: `http://colored-found-registered-franchise.trycloudflare.com`
+3. GEPA job `pl_ec6078f686be4852` created successfully
+4. Job failed when backend tried to fetch baseline rollouts - SSL verification error
+5. Agent tried second job `pl_4d86af3abc184909` with MITM CA bundle - still failed
+
+**Error:**
+```
+SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)'))
+```
+
+**Why It Still Failed:**
+- Backend runs remotely (Modal/cloud) and doesn't have access to local MITM proxy CA
+- Tunnel certificate not trusted by remote backend's CA bundle
+- Setting `REQUESTS_CA_BUNDLE` locally doesn't help - backend runs remotely
+- No way to configure backend's SSL verification settings
+
+**Impact:**
+- Tunnel workaround doesn't work for remote backend jobs
+- Cannot use tunnel for prompt optimization workflows
+- Must use remote task app with trusted certificate
+
+**Status:** ⚠️ Same as Session 5 Issue #5 - tunnel unusable for remote backend
+
+---
+
+#### 8. GEPA Jobs Failed Due to SSL Verification
+**Problem:** Both GEPA jobs failed when backend tried to fetch baseline rollouts
+
+**Job 1:** `pl_ec6078f686be4852`
+- Created successfully
+- Failed when backend tried HTTPS connection to tunnel
+- Error: SSL certificate verification failed
+
+**Job 2:** `pl_4d86af3abc184909`
+- Created successfully  
+- Agent tried with MITM CA bundle locally (didn't help - backend runs remotely)
+- Failed with same SSL verification error
+- Error message: "certificate verify failed: unable to get local issuer certificate"
+
+**Why They Failed:**
+- Backend runs remotely and cannot verify tunnel certificates
+- Local CA bundle configuration doesn't affect remote backend
+- No way to disable SSL verification for backend requests
+
+**Impact:**
+- No optimized prompts produced
+- Workflow incomplete - cannot proceed to Step 4
+
+**Status:** ⚠️ Confirmed failure due to SSL certificate verification
+
+---
+
+#### 9. Interactive Prompts Still Blocking (Sessions 3, 4, 5)
+**Problem:** Commands still prompt for interactive input
+
+**Examples:**
+- `synth-ai train` prompts: "Select an option [1]: Aborted!"
+- `synth-ai train` prompts: "No value found for TASK_APP_URL. Enter value for TASK_APP_URL: Aborted!"
+
+**Status:** ⚠️ Same as Sessions 3, 4, 5 - still not fixed
+
+---
+
+#### 10. Response Format Warning (Sessions 1, 4, 5)
+**Problem:** CLI shows warning about unexpected response type
+
+**Warning:**
+```
+⚠️  Unexpected response type: list
+```
+
+**Status:** ⚠️ Same as Sessions 1, 4, 5 - still occurring
+
+---
+
+### Summary of New Issues
+
+**New Critical Issues:**
+1. **Status command type enum mismatch** - `prompt_learning` not in valid type values
+2. **Status command flag confusion** - `--limit` flag placement unclear
+3. **MITM proxy CA bundle discovery** - Baseline works with proxy CA but not documented
+
+**Repeated Issues (Still Not Fixed):**
+- Flag name inconsistency (`--env` vs `--env-file`) (Session 5)
+- Deploy command syntax confusion (Sessions 4, 5)
+- Environment variable loading (Sessions 3, 4, 5)
+- Config file overriding environment variables (Sessions 4, 5)
+- Cloudflare tunnel SSL failure (Session 5)
+- Interactive prompts blocking automation (Sessions 3, 4, 5)
+- Response format warnings (Sessions 1, 4, 5)
+
+**Key Findings:**
+- **Baseline succeeded** after discovering MITM proxy CA bundle (`mean_outcome_reward=0.6`, `success_rate=1.0`)
+- **Tunnel deployed successfully** but still unusable for remote backend jobs
+- **GEPA jobs failed** - both `pl_ec6078f686be4852` and `pl_4d86af3abc184909` failed due to SSL verification
+- **Root cause**: Remote backend cannot verify tunnel certificates, and local CA bundle configuration doesn't affect remote backend
+
+**Final Status:** Partial success - baseline completed but prompt optimization failed:
+
+1. **Baseline**: ✅ Succeeded after using MITM proxy CA bundle (`baseline_before.json` with `mean_outcome_reward=0.6`, `success_rate=1.0`)
+2. **Tunnel deployment**: ✅ Successfully deployed (`https://colored-found-registered-franchise.trycloudflare.com`)
+3. **GEPA jobs**: ❌ Both jobs failed due to SSL verification when backend tried to fetch rollouts
+4. **Root causes**:
+   - Remote backend cannot verify tunnel certificates (Session 5 issue, still unresolved)
+   - Local CA bundle configuration doesn't affect remote backend
+   - No way to configure backend's SSL verification settings
+   - Multiple repeated issues from previous sessions still unresolved
+
+**Agent's Final Summary:**
+- Baseline: Succeeded with MITM proxy CA bundle (mean reward 0.6, success rate 1.0)
+- Tunnel: Successfully deployed but backend cannot verify tunnel certificate
+- GEPA: Both jobs failed when backend tried to fetch rollouts due to SSL verification
+- Next steps: Need trusted TLS certificate or ability to configure backend SSL verification
+
+---
+
+## Session 7 - Backend API Issues and PostgREST Failures (2025-11-11)
+
+**Context:** Backend logs showing API endpoint errors and database query failures  
+**Task:** Testing session API and prompt learning workflows  
+**Time:** 2025-11-11 03:45-03:55 UTC
+
+### Critical Issues
+
+#### 1. Responses API Returns 404 for Model "gpt-5-nano"
+**Problem:** `/api/v1/responses` endpoint returns 404 Not Found when requesting model "gpt-5-nano"
+
+**Error:**
+```
+ERROR:app.routes.simple_training.backend_routes:❌ Responses API failed: {
+  "error": "Responses API request failed",
+  "modal_url": "https://synth-laboratories-dev--learning-v2-service-fastapi-app.modal.run/v1/responses",
+  "status_code": 404,
+  "model_requested": "gpt-5-nano",
+  "modal_response": "{\"detail\":\"Not Found\"}",
+  ...
+}
+```
+
+**Root Cause:**
+- Backend forwards request to Modal service at `/v1/responses`
+- Modal service returns 404 - endpoint may not exist or model not supported
+- Error message suggests checking if model supports responses API
+
+**Impact:**
+- Cannot use responses API with "gpt-5-nano" model
+- Workflow fails when trying to generate responses
+
+**Status:** ⚠️ Unresolved - Need to verify Modal service endpoint or model support
+
+**Location:** `monorepo/backend/app/routes/simple_training/backend_routes.py`
+
+---
+
+#### 2. Session Usage Endpoint Returns 405 Method Not Allowed (FOOTGUN)
+**Problem:** POST requests to `/api/v1/sessions/{session_id}/usage` return 405 Method Not Allowed
+
+**Error:**
+```
+INFO: 127.0.0.1:53527 - "POST /api/v1/sessions/sess_3a3b359e1f8f469a/usage HTTP/1.1" 405 Method Not Allowed
+INFO: 127.0.0.1:53530 - "POST /api/v1/sessions/sess_ad0b27b9bb884165/usage HTTP/1.1" 405 Method Not Allowed
+INFO: 127.0.0.1:53538 - "POST /api/v1/sessions/sess_b9bda51936874f1f/usage HTTP/1.1" 405 Method Not Allowed
+```
+
+**Root Cause:**
+- Endpoint may only accept GET, PUT, or PATCH methods
+- Route definition doesn't include POST method
+- API client attempting to POST usage data but endpoint not configured for it
+
+**Impact:**
+- Cannot record session usage via POST requests
+- Session tracking functionality broken
+- Tests failing when trying to record usage
+
+**Status:** ⚠️ Unresolved - Need to check route definition and add POST method or change client to use correct method
+
+**Location:** `monorepo/backend/app/routes/session_usage/endpoints.py` (likely)
+
+---
+
+#### 3. PostgREST Query Failures for Learning Metrics (Performance Issue)
+**Problem:** PostgREST queries for `learning_shared_metrics` consistently fail with 400 Bad Request, falling back to SQLAlchemy
+
+**Error:**
+```
+WARNING:app.orchestration.jobs.learning_repository:PostgREST list_metrics failed, falling back to SQLAlchemy: Client error '400 Bad Request' for url 'https://mivawyjmuwggrynczaef.supabase.co/rest/v1/learning_shared_metrics?job_id=eq.pl_ec6078f686be4852&order=created_at.asc&limit=200&step=gt.-1'
+```
+
+**Root Cause:**
+- PostgREST query syntax issue with `step=gt.-1` parameter
+- PostgREST may not support `gt` operator for negative numbers
+- Query parameter format may be incorrect for PostgREST
+
+**Impact:**
+- Every metrics query falls back to slower SQLAlchemy queries
+- Performance degradation (PostgREST is faster)
+- Warning spam in logs
+
+**Frequency:** Occurs on every job metrics query (multiple times per job status check)
+
+**Status:** ⚠️ Unresolved - Need to fix PostgREST query syntax or remove PostgREST optimization
+
+**Location:** `monorepo/backend/app/orchestration/jobs/learning_repository.py`
+
+**Fix Suggestion:**
+- Change `step=gt.-1` to `step=gte.0` or remove the filter
+- Or use PostgREST's proper syntax: `step=gte.0` instead of `step=gt.-1`
+
+---
+
+#### 4. Multiple Session Creation Calls (Potential Race Condition)
+**Problem:** Multiple simultaneous POST requests to `/api/v1/sessions` observed
+
+**Observation:**
+```
+INFO: 127.0.0.1:53516 - "POST /api/v1/sessions HTTP/1.1" 201 Created
+INFO: 127.0.0.1:53514 - "POST /api/v1/sessions HTTP/1.1" 201 Created
+INFO: 127.0.0.1:53518 - "POST /api/v1/sessions HTTP/1.1" 201 Created
+INFO: 127.0.0.1:53515 - "POST /api/v1/sessions HTTP/1.1" 201 Created
+INFO: 127.0.0.1:53517 - "POST /api/v1/sessions HTTP/1.1" 201 Created
+```
+
+**Root Cause:**
+- Tests or client code creating multiple sessions simultaneously
+- No deduplication or idempotency checks
+- Could indicate test design issue or actual race condition
+
+**Impact:**
+- Multiple sessions created unnecessarily
+- Potential database bloat
+- Unclear if this is expected behavior or bug
+
+**Status:** ⚠️ Needs investigation - May be expected test behavior
+
+---
+
+### Summary of New Issues
+
+**Critical Blockers:**
+1. Responses API 404 error prevents using "gpt-5-nano" model
+2. Session usage endpoint 405 error breaks session tracking
+
+**Performance Issues:**
+1. PostgREST query failures causing fallback to slower SQLAlchemy queries
+
+**Potential Issues:**
+1. Multiple simultaneous session creation (may be expected)
+
+**Root Causes:**
+- Modal service endpoint missing or model not supported
+- Route definition missing POST method for usage endpoint
+- PostgREST query syntax issue with negative number comparison
+- Test/client code creating multiple sessions
+
+**Fix Priority:**
+1. **High**: Fix session usage endpoint (405 error) - breaks core functionality
+2. **High**: Fix PostgREST query syntax - performance degradation
+3. **Medium**: Investigate/resolve Responses API 404 - model support issue
+4. **Low**: Review multiple session creation - may be expected
+
+---

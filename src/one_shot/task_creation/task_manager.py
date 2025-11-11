@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import tempfile
+import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
@@ -13,13 +15,46 @@ from one_shot.sensitivity import ensure_task_sensitivity, SensitivityLevel
 logger = logging.getLogger(__name__)
 
 
+def _get_state_file_path() -> Path:
+    """Get user-specific state file path.
+    
+    Uses ~/.oneshot/state.json if writable, otherwise falls back to temp directory.
+    """
+    state_dir = Path.home() / ".oneshot"
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / "state.json"
+    except (OSError, PermissionError):
+        # Fall back to temp directory if home directory is not writable
+        return Path(tempfile.gettempdir()) / "oneshot_state.json"
+
+
 class OneShotTaskManager:
     """Manages OneShot task creation"""
 
-    def __init__(self):
-        self.state_file = Path('/tmp/oneshot_state.json')
-        self.base_dir = Path.cwd()
-        self.tasks_dir = self.base_dir / 'data' / 'tasks' / 'created'
+    def __init__(self, base_dir: Path | None = None, tasks_dir: Path | None = None):
+        self.state_file = _get_state_file_path()
+        # Allow custom base_dir (for pair programming mode where cwd is temp workspace)
+        if base_dir is None:
+            # Check environment variable for custom base directory
+            env_base_dir = os.environ.get('ONESHOT_BASE_DIR')
+            if env_base_dir:
+                self.base_dir = Path(env_base_dir).resolve()
+            else:
+                self.base_dir = Path.cwd()
+        else:
+            self.base_dir = Path(base_dir).resolve()
+        
+        # Allow custom tasks_dir (for specifying exact save location)
+        if tasks_dir is None:
+            # Check environment variable for custom tasks directory
+            env_tasks_dir = os.environ.get('ONESHOT_TASKS_DIR')
+            if env_tasks_dir:
+                self.tasks_dir = Path(env_tasks_dir).resolve()
+            else:
+                self.tasks_dir = self.base_dir / 'data' / 'tasks' / 'created'
+        else:
+            self.tasks_dir = Path(tasks_dir).resolve()
 
     def generate_task_slug(self, title: str) -> str:
         import re
@@ -57,8 +92,22 @@ class OneShotTaskManager:
             "run_id": os.environ.get('RUN_ID', task_slug),
         }
 
-        with open(self.state_file, 'w') as f:
-            json.dump(state, f, indent=2)
+        # Write state file with file locking to prevent concurrent access issues
+        try:
+            with open(self.state_file, 'w') as f:
+                # Try to acquire lock (non-blocking)
+                try:
+                    if platform.system() != "Windows":
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # On Windows, file locking is handled automatically by open()
+                except (ImportError, OSError):
+                    # If locking fails, continue anyway (better than crashing)
+                    pass
+                json.dump(state, f, indent=2)
+        except (OSError, IOError) as e:
+            logger.error(f"Failed to write state file: {e}")
+            raise
 
         logger.info(f"Started task: {task_slug}")
         return {"ok": True, "task_slug": task_slug, "start_commit": start_commit, "started_at": state['started_at']}
@@ -67,8 +116,22 @@ class OneShotTaskManager:
         if not self.state_file.exists():
             return {"ok": False, "code": "NO_STATE", "message": "No task in progress (state file not found)"}
 
-        with open(self.state_file, 'r') as f:
-            state = json.load(f)
+        # Read state file with file locking to prevent concurrent access issues
+        try:
+            with open(self.state_file, 'r') as f:
+                # Try to acquire lock (non-blocking)
+                try:
+                    if platform.system() != "Windows":
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    # On Windows, file locking is handled automatically by open()
+                except (ImportError, OSError):
+                    # If locking fails, continue anyway (better than crashing)
+                    pass
+                state = json.load(f)
+        except (OSError, IOError) as e:
+            logger.error(f"Failed to read state file: {e}")
+            return {"ok": False, "code": "STATE_READ_ERROR", "message": f"Could not read state file: {e}"}
 
         GitHelpers.stage_all()
         touched_files = GitHelpers.get_touched_files(state['start_commit'])

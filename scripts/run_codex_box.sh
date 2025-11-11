@@ -790,7 +790,11 @@ else
     # ALWAYS pass OPENAI_API_KEY - it's required
     DOCKER_RUN_OPTS+=( -e "OPENAI_API_KEY=${OPENAI_API_KEY}" )
     # Enable Rust logging and stacktraces for Codex debugging
-    DOCKER_RUN_OPTS+=( -e "RUST_LOG=debug" )
+    if [[ -z "${RUST_LOG:-}" ]]; then
+        DOCKER_RUN_OPTS+=( -e "RUST_LOG=warn" )
+    else
+        DOCKER_RUN_OPTS+=( -e "RUST_LOG=${RUST_LOG}" )
+    fi
     DOCKER_RUN_OPTS+=( -e "RUST_BACKTRACE=1" )
     DOCKER_RUN_OPTS+=( -e "DEBUG=1" )
     echo "[run] Passing OPENAI_API_KEY to container (masked: ${KEY_PREFIX}...${KEY_SUFFIX})"
@@ -938,7 +942,7 @@ EOF
     # Bind-mount artifacts to host so logs/results land directly without a watcher
     DOCKER_RUN_OPTS+=( -v "$RUN_DIR/artifacts:/app/artifacts" )
     # Suppress verbose docker output
-    DOCKER_RUN_OPTS+=( --log-driver none )
+    # DOCKER_RUN_OPTS+=( --log-driver none )
     # Write run metadata for downstream evaluators
     START_TIME_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     cat > "$RUN_DIR/metadata.json" <<EOF

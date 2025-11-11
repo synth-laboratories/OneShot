@@ -9,14 +9,32 @@ class GitHelpers:
     """Git operations helper"""
 
     @staticmethod
-    def run_git(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
+    def run_git(cmd: List[str], check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
+        """Run a git command with timeout.
+        
+        Args:
+            cmd: Git command arguments (without 'git' prefix)
+            check: If True, raise exception on non-zero exit code
+            timeout: Timeout in seconds (default: 60)
+            
+        Returns:
+            CompletedProcess result
+            
+        Raises:
+            RuntimeError: If check=True and command fails
+            subprocess.TimeoutExpired: If command times out
+        """
         full_cmd = ['git'] + cmd
         logger.debug(f"Running git command: {' '.join(full_cmd)}")
-        result = subprocess.run(full_cmd, capture_output=True, text=True, check=False)
-        if check and result.returncode != 0:
-            logger.error(f"Git command failed: {result.stderr}")
-            raise RuntimeError(f"Git command failed: {result.stderr}")
-        return result
+        try:
+            result = subprocess.run(full_cmd, capture_output=True, text=True, check=False, timeout=timeout)
+            if check and result.returncode != 0:
+                logger.error(f"Git command failed: {result.stderr}")
+                raise RuntimeError(f"Git command failed: {result.stderr}")
+            return result
+        except subprocess.TimeoutExpired:
+            logger.error(f"Git command timed out after {timeout}s: {' '.join(full_cmd)}")
+            raise
 
     @staticmethod
     def get_current_branch() -> str:
